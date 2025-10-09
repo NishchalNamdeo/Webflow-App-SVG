@@ -52,6 +52,7 @@ const App: React.FC = () => {
   const [copied, setCopied] = useState(false);
   const [svgCode, setSvgCode] = useState(""); // For SVG code input
   const [uploadMethod, setUploadMethod] = useState<"file" | "code">("file"); // Upload method toggle
+  const [uploadError, setUploadError] = useState(""); // Error message
 
   const checkApiReady = useCallback(() =>
     typeof webflow !== "undefined" && webflow && typeof webflow.getSelectedElement === "function", []);
@@ -93,33 +94,69 @@ const App: React.FC = () => {
     if (currentSVG && selectedElement) {
       const timeoutId = setTimeout(() => {
         applySVGToWebflow();
-      }, 300);
+      }, 500);
       
       return () => clearTimeout(timeoutId);
     }
   }, [currentSVG?.styles, currentSVG]);
 
+  // Simple SVG validation function
+  const isValidSVG = (content: string): boolean => {
+    try {
+      // Basic check for SVG structure
+      return content.includes('<svg') && content.includes('</svg>');
+    } catch (error) {
+      return false;
+    }
+  };
+
+  // Clean SVG content
+  const cleanSVGContent = (content: string): string => {
+    // Remove extra spaces and ensure proper formatting
+    return content.trim().replace(/\s+/g, ' ');
+  };
+
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
-    if (!files) return;
+    if (!files || files.length === 0) return;
 
+    setUploadError("");
+    
     Array.from(files).forEach(file => {
-      if (file.type === "image/svg+xml") {
+      // Check if file is SVG
+      if (file.type === "image/svg+xml" || file.name.toLowerCase().endsWith('.svg')) {
         const reader = new FileReader();
         reader.onload = (e) => {
-          const svgContent = e.target?.result as string;
-          const newSVG: SVGElement = {
-            id: `svg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-            name: file.name.replace('.svg', ''),
-            svgContent,
-            styles: { ...DEFAULT_SVG_STYLE }
-          };
+          try {
+            const svgContent = e.target?.result as string;
+            
+            if (!isValidSVG(svgContent)) {
+              setUploadError(`"${file.name}" is not a valid SVG file`);
+              return;
+            }
 
-          setUploadedSVGs(prev => [...prev, newSVG]);
-          setCurrentSVG(newSVG);
-          setActiveTab("style");
+            const cleanedContent = cleanSVGContent(svgContent);
+            const newSVG: SVGElement = {
+              id: `svg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+              name: file.name.replace('.svg', '').replace('.SVG', ''),
+              svgContent: cleanedContent,
+              styles: { ...DEFAULT_SVG_STYLE }
+            };
+
+            setUploadedSVGs(prev => [...prev, newSVG]);
+            setCurrentSVG(newSVG);
+            setActiveTab("style");
+            
+          } catch (error) {
+            setUploadError(`Error reading "${file.name}". Please try another file.`);
+          }
+        };
+        reader.onerror = () => {
+          setUploadError(`Failed to read "${file.name}". Please try again.`);
         };
         reader.readAsText(file);
+      } else {
+        setUploadError("Please upload only SVG files with .svg extension");
       }
     });
   };
@@ -127,27 +164,45 @@ const App: React.FC = () => {
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setIsDragging(false);
+    setUploadError("");
 
     const files = event.dataTransfer.files;
-    if (!files) return;
+    if (!files || files.length === 0) return;
 
     Array.from(files).forEach(file => {
-      if (file.type === "image/svg+xml") {
+      if (file.type === "image/svg+xml" || file.name.toLowerCase().endsWith('.svg')) {
         const reader = new FileReader();
         reader.onload = (e) => {
-          const svgContent = e.target?.result as string;
-          const newSVG: SVGElement = {
-            id: `svg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-            name: file.name.replace('.svg', ''),
-            svgContent,
-            styles: { ...DEFAULT_SVG_STYLE }
-          };
+          try {
+            const svgContent = e.target?.result as string;
+            
+            if (!isValidSVG(svgContent)) {
+              setUploadError(`"${file.name}" is not a valid SVG file`);
+              return;
+            }
 
-          setUploadedSVGs(prev => [...prev, newSVG]);
-          setCurrentSVG(newSVG);
-          setActiveTab("style");
+            const cleanedContent = cleanSVGContent(svgContent);
+            const newSVG: SVGElement = {
+              id: `svg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+              name: file.name.replace('.svg', '').replace('.SVG', ''),
+              svgContent: cleanedContent,
+              styles: { ...DEFAULT_SVG_STYLE }
+            };
+
+            setUploadedSVGs(prev => [...prev, newSVG]);
+            setCurrentSVG(newSVG);
+            setActiveTab("style");
+            
+          } catch (error) {
+            setUploadError(`Error reading "${file.name}". Please try another file.`);
+          }
+        };
+        reader.onerror = () => {
+          setUploadError(`Failed to read "${file.name}". Please try again.`);
         };
         reader.readAsText(file);
+      } else {
+        setUploadError("Please drop only SVG files with .svg extension");
       }
     });
   };
@@ -165,25 +220,24 @@ const App: React.FC = () => {
   // SVG code se SVG create karta hai
   const handleSvgCodeUpload = () => {
     if (!svgCode.trim()) {
-      alert("Please enter SVG code");
+      setUploadError("Please enter SVG code");
       return;
     }
 
+    setUploadError("");
+    
     try {
-      // Validate SVG code
-      const parser = new DOMParser();
-      const svgDoc = parser.parseFromString(svgCode, 'image/svg+xml');
-      const svgElement = svgDoc.documentElement;
+      const cleanedCode = cleanSVGContent(svgCode);
       
-      if (svgElement.nodeName !== 'svg') {
-        alert("Please enter valid SVG code");
+      if (!isValidSVG(cleanedCode)) {
+        setUploadError("Please enter valid SVG code containing <svg> tags");
         return;
       }
 
       const newSVG: SVGElement = {
         id: `svg-code-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         name: "Custom SVG",
-        svgContent: svgCode,
+        svgContent: cleanedCode,
         styles: { ...DEFAULT_SVG_STYLE }
       };
 
@@ -193,7 +247,7 @@ const App: React.FC = () => {
       setSvgCode(""); // Clear input
       
     } catch (error) {
-      alert("Invalid SVG code. Please check and try again.");
+      setUploadError("Invalid SVG code. Please check your code and try again.");
     }
   };
 
@@ -220,59 +274,139 @@ const App: React.FC = () => {
       console.log("SVG successfully applied to Webflow element");
     } catch (error) {
       console.error("Error applying SVG:", error);
-      alert("Failed to apply SVG. Please try again.");
+      // Fallback: try alternative method
+      try {
+        await applySVGToWebflowFallback();
+      } catch (fallbackError) {
+        alert("Failed to apply SVG. Please try again.");
+      }
     } finally {
       setIsApplying(false);
     }
   };
 
+  // Fallback method agar setHtml kaam na kare
+  const applySVGToWebflowFallback = async () => {
+    if (!currentSVG || !selectedElement) return;
+    
+    try {
+      const styledSVG = applyStylesToSVG(currentSVG.svgContent, currentSVG.styles);
+      
+      // Alternative approach: create a style with background image
+      const styleName = `svg-style-${Date.now()}`;
+      const style = await webflow.createStyle(styleName);
+      
+      const dataURI = `data:image/svg+xml,${encodeURIComponent(styledSVG)}`;
+      await style.setProperties({
+        'background-image': `url("${dataURI}")`,
+        'background-repeat': 'no-repeat',
+        'background-position': 'center',
+        'background-size': 'contain'
+      });
+
+      const currentStyles = await selectedElement.getStyles();
+      const updatedStyles = Array.isArray(currentStyles) 
+        ? [...currentStyles, style] 
+        : [style];
+      
+      await selectedElement.setStyles(updatedStyles);
+      
+    } catch (error) {
+      throw error;
+    }
+  };
+
   // SVG content ko style karta hai with proper path elements
   const applyStylesToSVG = (svgContent: string, styles: SVGStyle): string => {
-    const parser = new DOMParser();
-    const svgDoc = parser.parseFromString(svgContent, 'image/svg+xml');
-    const svgElement = svgDoc.documentElement;
+    try {
+      // Create a temporary div to parse SVG
+      const tempDiv = document.createElement('div');
+      tempDiv.innerHTML = svgContent;
+      const svgElement = tempDiv.querySelector('svg');
+      
+      if (!svgElement) {
+        return svgContent; // Return original if no SVG found
+      }
 
-    // SVG attributes set karo
-    svgElement.setAttribute('width', '100%');
-    svgElement.setAttribute('height', '100%');
-    svgElement.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+      // Set basic attributes
+      svgElement.setAttribute('width', '100%');
+      svgElement.setAttribute('height', '100%');
+      svgElement.setAttribute('preserveAspectRatio', 'xMidYMid meet');
 
-    // ViewBox ensure karo
-    if (!svgElement.getAttribute('viewBox')) {
-      const width = svgElement.getAttribute('width') || '24';
-      const height = svgElement.getAttribute('height') || '24';
-      svgElement.setAttribute('viewBox', `0 0 ${width} ${height}`);
+      // Ensure viewBox exists
+      if (!svgElement.getAttribute('viewBox')) {
+        svgElement.setAttribute('viewBox', '0 0 24 24');
+      }
+
+      // Apply styles to all SVG elements
+      const elements = svgElement.querySelectorAll('*');
+      elements.forEach(element => {
+        const tagName = element.tagName.toLowerCase();
+        
+        // Apply fill to elements that can have fill
+        if (['path', 'circle', 'rect', 'ellipse', 'polygon', 'polyline'].includes(tagName)) {
+          const currentFill = element.getAttribute('fill');
+          if (currentFill !== 'none') {
+            element.setAttribute('fill', styles.fillColor);
+          }
+        }
+        
+        // Apply stroke to elements that can have stroke
+        if (['path', 'circle', 'rect', 'ellipse', 'line', 'polyline', 'polygon'].includes(tagName)) {
+          const currentStroke = element.getAttribute('stroke');
+          if (currentStroke !== 'none') {
+            element.setAttribute('stroke', styles.strokeColor);
+            element.setAttribute('stroke-width', styles.strokeWidth.toString());
+          }
+        }
+        
+        // Apply opacity
+        element.setAttribute('opacity', styles.opacity.toString());
+      });
+
+      // Apply transform
+      const existingTransform = svgElement.getAttribute('transform') || '';
+      const newTransform = `scale(${styles.scale}) rotate(${styles.rotation}) ${existingTransform}`;
+      svgElement.setAttribute('transform', newTransform.trim());
+
+      return svgElement.outerHTML;
+    } catch (error) {
+      console.error("Error applying styles to SVG:", error);
+      return svgContent; // Return original if styling fails
     }
+  };
 
-    // Individual SVG elements ko style karo (path, circle, rect, etc.)
-    const styleableElements = svgElement.querySelectorAll('path, circle, rect, ellipse, line, polyline, polygon, g');
-    
-    styleableElements.forEach(element => {
-      // Fill color apply karo
-      if (styles.fillColor && styles.fillColor !== 'none') {
-        element.setAttribute('fill', styles.fillColor);
-      }
+  // Simple SVG preview without styling for thumbnails
+  const createSVGPreview = (svgContent: string): string => {
+    try {
+      const tempDiv = document.createElement('div');
+      tempDiv.innerHTML = svgContent;
+      const svgElement = tempDiv.querySelector('svg');
       
-      // Stroke color apply karo
-      if (styles.strokeColor && styles.strokeColor !== 'none') {
-        element.setAttribute('stroke', styles.strokeColor);
+      if (svgElement) {
+        // Basic attributes for preview
+        svgElement.setAttribute('width', '100%');
+        svgElement.setAttribute('height', '100%');
+        svgElement.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+        
+        // Simple styling for preview
+        const elements = svgElement.querySelectorAll('*');
+        elements.forEach(element => {
+          const tagName = element.tagName.toLowerCase();
+          if (['path', 'circle', 'rect', 'ellipse', 'polygon', 'polyline'].includes(tagName)) {
+            const currentFill = element.getAttribute('fill');
+            if (currentFill !== 'none') {
+              element.setAttribute('fill', '#3b82f6'); // Default blue for preview
+            }
+          }
+        });
+        
+        return svgElement.outerHTML;
       }
-      
-      // Stroke width apply karo
-      if (styles.strokeWidth > 0) {
-        element.setAttribute('stroke-width', styles.strokeWidth.toString());
-      }
-      
-      // Opacity apply karo
-      element.setAttribute('opacity', styles.opacity.toString());
-    });
-
-    // Transform group banakar apply karo
-    const existingTransform = svgElement.getAttribute('transform') || '';
-    const newTransform = `scale(${styles.scale}) rotate(${styles.rotation} 50 50) ${existingTransform}`;
-    svgElement.setAttribute('transform', newTransform.trim());
-
-    return new XMLSerializer().serializeToString(svgElement);
+      return '<svg width="100" height="100" viewBox="0 0 24 24"><text x="12" y="12" text-anchor="middle" fill="#666" font-size="8">SVG</text></svg>';
+    } catch (error) {
+      return '<svg width="100" height="100" viewBox="0 0 24 24"><text x="12" y="12" text-anchor="middle" fill="#666" font-size="8">Error</text></svg>';
+    }
   };
 
   const copySVGCode = () => {
@@ -384,6 +518,13 @@ const App: React.FC = () => {
               </button>
             </div>
 
+            {/* Error Message */}
+            {uploadError && (
+              <div className="mb-3 p-2 bg-red-100 border border-red-300 text-red-700 text-xs rounded">
+                {uploadError}
+              </div>
+            )}
+
             {/* File Upload Section */}
             {uploadMethod === "file" && (
               <div
@@ -407,7 +548,7 @@ const App: React.FC = () => {
                     className="hidden"
                   />
                 </label>
-                <p className="text-xs text-gray-500 mt-3">Supports multiple SVG files</p>
+                <p className="text-xs text-gray-500 mt-3">Supports .svg files only</p>
               </div>
             )}
 
@@ -418,7 +559,12 @@ const App: React.FC = () => {
                 <textarea
                   value={svgCode}
                   onChange={(e) => setSvgCode(e.target.value)}
-                  placeholder="Paste your SVG code here...&#10;&#10;Example: &#10;&lt;svg width=&quot;24&quot; height=&quot;24&quot; viewBox=&quot;0 0 24 24&quot; fill=&quot;none&quot; xmlns=&quot;http://www.w3.org/2000/svg&quot;&gt;&#10;  &lt;path d=&quot;M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z&quot; fill=&quot;currentColor&quot;/&gt;&#10;&lt;/svg&gt;"
+                  placeholder={`Paste your SVG code here...
+
+Example: 
+<svg width="24" height="24" viewBox="0 0 24 24">
+  <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" fill="currentColor"/>
+</svg>`}
                   className="flex-1 w-full p-3 text-xs border border-gray-300 rounded-lg resize-none font-mono"
                   rows={8}
                 />
@@ -435,7 +581,7 @@ const App: React.FC = () => {
             {/* Uploaded SVGs List */}
             {uploadedSVGs.length > 0 && (
               <div className="mt-4">
-                <h4 className="font-semibold text-xs mb-2">Your SVGs</h4>
+                <h4 className="font-semibold text-xs mb-2">Your SVGs ({uploadedSVGs.length})</h4>
                 <div className="grid grid-cols-3 gap-2 max-h-24 overflow-y-auto">
                   {uploadedSVGs.map(svg => (
                     <button
@@ -448,7 +594,7 @@ const App: React.FC = () => {
                       <div 
                         className="h-8 w-full bg-gray-100 rounded flex items-center justify-center"
                         dangerouslySetInnerHTML={{ 
-                          __html: applyStylesToSVG(svg.svgContent, { ...svg.styles, scale: 0.5 }) 
+                          __html: createSVGPreview(svg.svgContent)
                         }}
                       />
                       <div className="text-[10px] mt-1 truncate">{svg.name}</div>
