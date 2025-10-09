@@ -50,6 +50,8 @@ const App: React.FC = () => {
   const [isDragging, setIsDragging] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [svgCode, setSvgCode] = useState(""); // For SVG code input
+  const [uploadMethod, setUploadMethod] = useState<"file" | "code">("file"); // Upload method toggle
 
   const checkApiReady = useCallback(() =>
     typeof webflow !== "undefined" && webflow && typeof webflow.getSelectedElement === "function", []);
@@ -86,6 +88,17 @@ const App: React.FC = () => {
     };
   }, [checkApiReady]);
 
+  // Auto-apply when SVG or styles change
+  useEffect(() => {
+    if (currentSVG && selectedElement) {
+      const timeoutId = setTimeout(() => {
+        applySVGToWebflow();
+      }, 300);
+      
+      return () => clearTimeout(timeoutId);
+    }
+  }, [currentSVG?.styles, currentSVG]);
+
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files) return;
@@ -103,10 +116,8 @@ const App: React.FC = () => {
           };
 
           setUploadedSVGs(prev => [...prev, newSVG]);
-          if (!currentSVG) {
-            setCurrentSVG(newSVG);
-            setActiveTab("style");
-          }
+          setCurrentSVG(newSVG);
+          setActiveTab("style");
         };
         reader.readAsText(file);
       }
@@ -133,10 +144,8 @@ const App: React.FC = () => {
           };
 
           setUploadedSVGs(prev => [...prev, newSVG]);
-          if (!currentSVG) {
-            setCurrentSVG(newSVG);
-            setActiveTab("style");
-          }
+          setCurrentSVG(newSVG);
+          setActiveTab("style");
         };
         reader.readAsText(file);
       }
@@ -153,6 +162,41 @@ const App: React.FC = () => {
     setIsDragging(false);
   };
 
+  // SVG code se SVG create karta hai
+  const handleSvgCodeUpload = () => {
+    if (!svgCode.trim()) {
+      alert("Please enter SVG code");
+      return;
+    }
+
+    try {
+      // Validate SVG code
+      const parser = new DOMParser();
+      const svgDoc = parser.parseFromString(svgCode, 'image/svg+xml');
+      const svgElement = svgDoc.documentElement;
+      
+      if (svgElement.nodeName !== 'svg') {
+        alert("Please enter valid SVG code");
+        return;
+      }
+
+      const newSVG: SVGElement = {
+        id: `svg-code-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        name: "Custom SVG",
+        svgContent: svgCode,
+        styles: { ...DEFAULT_SVG_STYLE }
+      };
+
+      setUploadedSVGs(prev => [...prev, newSVG]);
+      setCurrentSVG(newSVG);
+      setActiveTab("style");
+      setSvgCode(""); // Clear input
+      
+    } catch (error) {
+      alert("Invalid SVG code. Please check and try again.");
+    }
+  };
+
   const updateSVGStyle = (updates: Partial<SVGStyle>) => {
     if (!currentSVG) return;
 
@@ -162,196 +206,71 @@ const App: React.FC = () => {
     } : null);
   };
 
-  // Fixed function - SVG ko Webflow mein properly apply karega
-  const applyStyleToWebflow = async () => {
+  // SVG ko Webflow mein directly HTML element ke roop mein insert karta hai
+  const applySVGToWebflow = async () => {
     if (!currentSVG || !selectedElement) return;
 
     setIsApplying(true);
     try {
       const styledSVG = applyStylesToSVG(currentSVG.svgContent, currentSVG.styles);
       
-      // Webflow element ko directly SVG content set karo
-      await applySVGToElement(selectedElement, styledSVG);
+      // SVG ko directly HTML content ke roop mein set karo
+      await selectedElement.setHtml(styledSVG);
       
+      console.log("SVG successfully applied to Webflow element");
     } catch (error) {
       console.error("Error applying SVG:", error);
-      alert("Failed to apply SVG style. Please try again.");
+      alert("Failed to apply SVG. Please try again.");
     } finally {
       setIsApplying(false);
     }
   };
 
-  // New function - SVG ko directly Webflow element mein set karta hai
-  const applySVGToElement = async (element: any, svgContent: string) => {
-    try {
-      // Pehle existing styles clear karo
-      await clearExistingStyles(element);
-      
-      // Naya style create karo
-      const styleName = `svg-style-${Date.now()}`;
-      const newStyle = await webflow.createStyle(styleName);
-      
-      // SVG ko data URI mein convert karo
-      const dataURI = `url("data:image/svg+xml,${encodeURIComponent(svgContent)}")`;
-      
-      // Background properties set karo - no-repeat ensure karo
-      await newStyle.setProperties({
-        'background-image': dataURI,
-        'background-repeat': 'no-repeat',
-        'background-position': 'center',
-        'background-size': 'contain',
-        'width': '100px',
-        'height': '100px'
-      });
-
-      // Element ko naya style assign karo
-      const currentStyles = await element.getStyles();
-      const updatedStyles = Array.isArray(currentStyles) 
-        ? [...currentStyles, newStyle] 
-        : [newStyle];
-      
-      await element.setStyles(updatedStyles);
-      
-    } catch (error) {
-      throw error;
-    }
-  };
-
-  // Existing styles clear karne ka function
-  const clearExistingStyles = async (element: any) => {
-    try {
-      const styles = await element.getStyles();
-      if (styles && styles.length > 0) {
-        // Sirf background-image wale styles clear karo
-        for (const style of styles) {
-          const properties = await style.getProperties();
-          if (properties && properties['background-image']) {
-            await style.setProperties({
-              'background-image': 'none',
-              'background-repeat': 'repeat'
-            });
-          }
-        }
-      }
-    } catch (error) {
-      console.log("No existing styles to clear");
-    }
-  };
-
-  const applyStyle = async (property: string, value: string) => {
-    const element = await webflow.getSelectedElement();
-    if (!element) {
-      alert("No element selected. Please select an element in the Webflow Designer.");
-      return;
-    }
-
-    try {
-      if (!element.styles) {
-        alert("This element does not support styles.");
-        return;
-      }
-
-      const styles = await element.getStyles();
-      let stylesArray = [];
-
-      if (Array.isArray(styles)) {
-        stylesArray = styles;
-      } else if (styles && typeof styles[Symbol.iterator] === 'function') {
-        stylesArray = Array.from(styles);
-      } else {
-        stylesArray = [];
-      }
-
-      let targetStyle = null;
-      let existingStyleWithProperty = null;
-
-      for (const style of stylesArray) {
-        const properties = await style.getProperties();
-        if (properties && property in properties) {
-          existingStyleWithProperty = style;
-          break;
-        }
-      }
-
-      if (existingStyleWithProperty) {
-        targetStyle = existingStyleWithProperty;
-      } else if (stylesArray.length === 1) {
-        targetStyle = stylesArray[0];
-      } else {
-        let baseStyleName = property.replace('-', '_') + '_style';
-        let styleName = baseStyleName;
-        let count = 1;
-        let nameIsUnique = false;
-
-        while (!nameIsUnique) {
-          try {
-            const existingStyle = await webflow.getStyleByName(styleName);
-            if (existingStyle) {
-              styleName = `${baseStyleName}-${count}`;
-              count++;
-            } else {
-              nameIsUnique = true;
-            }
-          } catch (error: any) {
-            if (error.code === 404) {
-              nameIsUnique = true;
-            } else {
-              styleName = `${property}-${Date.now()}`;
-              nameIsUnique = true;
-            }
-          }
-        }
-
-        const newStyle = await webflow.createStyle(styleName);
-        await newStyle.setProperties({ [property]: value });
-
-        const updatedStyles = [...stylesArray, newStyle];
-        await element.setStyles(updatedStyles);
-        targetStyle = newStyle;
-      }
-
-      if (targetStyle) {
-        const currentProperties = await targetStyle.getProperties();
-        const newProperties = { ...currentProperties, [property]: value };
-        await targetStyle.setProperties(newProperties);
-      }
-    } catch (error) {
-      throw error;
-    }
-  };
-
-  // Optimized SVG styling function
+  // SVG content ko style karta hai with proper path elements
   const applyStylesToSVG = (svgContent: string, styles: SVGStyle): string => {
     const parser = new DOMParser();
     const svgDoc = parser.parseFromString(svgContent, 'image/svg+xml');
     const svgElement = svgDoc.documentElement;
 
-    // Remove existing dimensions and attributes
-    svgElement.removeAttribute('width');
-    svgElement.removeAttribute('height');
-    svgElement.removeAttribute('style');
-    
-    // Set consistent small size
-    svgElement.setAttribute('width', '100');
-    svgElement.setAttribute('height', '100');
-    
-    // Maintain aspect ratio
-    const viewBox = svgElement.getAttribute('viewBox');
-    if (!viewBox) {
-      svgElement.setAttribute('viewBox', '0 0 24 24');
-    }
-    
+    // SVG attributes set karo
+    svgElement.setAttribute('width', '100%');
+    svgElement.setAttribute('height', '100%');
     svgElement.setAttribute('preserveAspectRatio', 'xMidYMid meet');
 
-    // Apply styles
-    svgElement.setAttribute('fill', styles.fillColor);
-    svgElement.setAttribute('stroke', styles.strokeColor);
-    svgElement.setAttribute('stroke-width', styles.strokeWidth.toString());
-    svgElement.setAttribute('opacity', styles.opacity.toString());
+    // ViewBox ensure karo
+    if (!svgElement.getAttribute('viewBox')) {
+      const width = svgElement.getAttribute('width') || '24';
+      const height = svgElement.getAttribute('height') || '24';
+      svgElement.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    }
+
+    // Individual SVG elements ko style karo (path, circle, rect, etc.)
+    const styleableElements = svgElement.querySelectorAll('path, circle, rect, ellipse, line, polyline, polygon, g');
     
-    // Transform apply karo
-    const transform = `scale(${styles.scale}) rotate(${styles.rotation})`;
-    svgElement.setAttribute('transform', transform);
+    styleableElements.forEach(element => {
+      // Fill color apply karo
+      if (styles.fillColor && styles.fillColor !== 'none') {
+        element.setAttribute('fill', styles.fillColor);
+      }
+      
+      // Stroke color apply karo
+      if (styles.strokeColor && styles.strokeColor !== 'none') {
+        element.setAttribute('stroke', styles.strokeColor);
+      }
+      
+      // Stroke width apply karo
+      if (styles.strokeWidth > 0) {
+        element.setAttribute('stroke-width', styles.strokeWidth.toString());
+      }
+      
+      // Opacity apply karo
+      element.setAttribute('opacity', styles.opacity.toString());
+    });
+
+    // Transform group banakar apply karo
+    const existingTransform = svgElement.getAttribute('transform') || '';
+    const newTransform = `scale(${styles.scale}) rotate(${styles.rotation} 50 50) ${existingTransform}`;
+    svgElement.setAttribute('transform', newTransform.trim());
 
     return new XMLSerializer().serializeToString(svgElement);
   };
@@ -360,17 +279,16 @@ const App: React.FC = () => {
     if (!currentSVG) return;
 
     const styledSVG = applyStylesToSVG(currentSVG.svgContent, currentSVG.styles);
-    const cssCode = `background-image: url("data:image/svg+xml,${encodeURIComponent(styledSVG)}"); background-repeat: no-repeat; background-position: center; background-size: contain;`;
-
+    
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(cssCode).then(() => {
+      navigator.clipboard.writeText(styledSVG).then(() => {
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       }).catch(() => {
-        copyToClipboardFallback(cssCode);
+        copyToClipboardFallback(styledSVG);
       });
     } else {
-      copyToClipboardFallback(cssCode);
+      copyToClipboardFallback(styledSVG);
     }
   };
 
@@ -384,12 +302,12 @@ const App: React.FC = () => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      alert("Failed to copy code. Please copy manually.");
+      alert("Failed to copy SVG code. Please copy manually.");
     }
     document.body.removeChild(textarea);
   };
 
-  const resetStyles = async () => {
+  const resetStyles = () => {
     if (!currentSVG) return;
     
     // Local styles reset
@@ -397,15 +315,6 @@ const App: React.FC = () => {
       ...prev,
       styles: { ...DEFAULT_SVG_STYLE }
     } : null);
-
-    // Webflow se bhi styles clear karo
-    if (selectedElement) {
-      try {
-        await clearExistingStyles(selectedElement);
-      } catch (error) {
-        console.log("Error clearing Webflow styles:", error);
-      }
-    }
   };
 
   const selectSVG = (svg: SVGElement) => {
@@ -420,7 +329,7 @@ const App: React.FC = () => {
           <div className="space-y-2">
             <div className="text-4xl">👉</div>
             <h3 className="font-semibold text-lg">Select an Element</h3>
-            <p className="text-sm text-gray-500">Please select an element in Webflow Designer to apply SVG.</p>
+            <p className="text-sm text-gray-500">Please select a Div Block or Container in Webflow Designer to apply SVG.</p>
           </div>
         </div>
       </div>
@@ -451,50 +360,95 @@ const App: React.FC = () => {
       <div className="flex-1 overflow-hidden">
         {activeTab === "upload" && (
           <div className="p-4 h-full flex flex-col">
-            <div
-              className={`drop-zone flex-1 flex flex-col items-center justify-center p-6 text-center ${isDragging ? 'drag-over' : ''
+            {/* Upload Method Toggle */}
+            <div className="flex mb-4 bg-gray-100 rounded-lg p-1">
+              <button
+                className={`flex-1 py-1 text-xs rounded-md transition-colors ${
+                  uploadMethod === "file" 
+                    ? 'bg-white text-blue-700 font-semibold shadow-sm' 
+                    : 'text-gray-500'
                 }`}
-              onDrop={handleDrop}
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-            >
-              <div className="text-4xl mb-2">📁</div>
-              <h3 className="font-semibold text-sm mb-1">Drop SVG files here</h3>
-              <p className="text-xs text-gray-500 mb-3">or</p>
-              <label className="bg-blue-600 text-white px-4 py-2 rounded text-xs cursor-pointer hover:bg-blue-700 transition-colors">
-                Browse Files
-                <input
-                  type="file"
-                  multiple
-                  accept=".svg"
-                  onChange={handleFileUpload}
-                  className="hidden"
-                />
-              </label>
-              <p className="text-xs text-gray-500 mt-3">Supports multiple SVG files</p>
+                onClick={() => setUploadMethod("file")}
+              >
+                Upload File
+              </button>
+              <button
+                className={`flex-1 py-1 text-xs rounded-md transition-colors ${
+                  uploadMethod === "code" 
+                    ? 'bg-white text-blue-700 font-semibold shadow-sm' 
+                    : 'text-gray-500'
+                }`}
+                onClick={() => setUploadMethod("code")}
+              >
+                SVG Code
+              </button>
             </div>
 
+            {/* File Upload Section */}
+            {uploadMethod === "file" && (
+              <div
+                className={`drop-zone flex-1 flex flex-col items-center justify-center p-6 text-center border-2 border-dashed rounded-lg ${
+                  isDragging ? 'border-blue-400 bg-blue-50' : 'border-gray-300'
+                }`}
+                onDrop={handleDrop}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+              >
+                <div className="text-4xl mb-2">📁</div>
+                <h3 className="font-semibold text-sm mb-1">Drop SVG files here</h3>
+                <p className="text-xs text-gray-500 mb-3">or</p>
+                <label className="bg-blue-600 text-white px-4 py-2 rounded text-xs cursor-pointer hover:bg-blue-700 transition-colors">
+                  Browse Files
+                  <input
+                    type="file"
+                    multiple
+                    accept=".svg"
+                    onChange={handleFileUpload}
+                    className="hidden"
+                  />
+                </label>
+                <p className="text-xs text-gray-500 mt-3">Supports multiple SVG files</p>
+              </div>
+            )}
+
+            {/* SVG Code Upload Section */}
+            {uploadMethod === "code" && (
+              <div className="flex-1 flex flex-col">
+                <h3 className="font-semibold text-sm mb-2">Paste SVG Code</h3>
+                <textarea
+                  value={svgCode}
+                  onChange={(e) => setSvgCode(e.target.value)}
+                  placeholder="Paste your SVG code here...&#10;&#10;Example: &#10;&lt;svg width=&quot;24&quot; height=&quot;24&quot; viewBox=&quot;0 0 24 24&quot; fill=&quot;none&quot; xmlns=&quot;http://www.w3.org/2000/svg&quot;&gt;&#10;  &lt;path d=&quot;M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z&quot; fill=&quot;currentColor&quot;/&gt;&#10;&lt;/svg&gt;"
+                  className="flex-1 w-full p-3 text-xs border border-gray-300 rounded-lg resize-none font-mono"
+                  rows={8}
+                />
+                <button
+                  onClick={handleSvgCodeUpload}
+                  disabled={!svgCode.trim()}
+                  className="mt-3 bg-blue-600 text-white py-2 rounded text-xs hover:bg-blue-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+                >
+                  Upload SVG Code
+                </button>
+              </div>
+            )}
+
+            {/* Uploaded SVGs List */}
             {uploadedSVGs.length > 0 && (
               <div className="mt-4">
-                <h4 className="font-semibold text-xs mb-2">Uploaded SVGs</h4>
-                <div className="grid grid-cols-3 gap-2 max-h-24 overflow-y-auto scrollbar-thin">
+                <h4 className="font-semibold text-xs mb-2">Your SVGs</h4>
+                <div className="grid grid-cols-3 gap-2 max-h-24 overflow-y-auto">
                   {uploadedSVGs.map(svg => (
                     <button
                       key={svg.id}
-                      className="preset-card p-1 bg-white border border-gray-200 rounded hover:shadow-md transition-all"
+                      className={`preset-card p-1 bg-white border rounded hover:shadow-md transition-all ${
+                        currentSVG?.id === svg.id ? 'border-blue-500 ring-2 ring-blue-200' : 'border-gray-200'
+                      }`}
                       onClick={() => selectSVG(svg)}
                     >
                       <div 
                         className="h-8 w-full bg-gray-100 rounded flex items-center justify-center"
-                        style={{ 
-                          width: '100%', 
-                          height: '32px',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center'
-                        }}
                         dangerouslySetInnerHTML={{ 
-                          __html: applyStylesToSVG(svg.svgContent, { ...DEFAULT_SVG_STYLE, scale: 0.3 }) 
+                          __html: applyStylesToSVG(svg.svgContent, { ...svg.styles, scale: 0.5 }) 
                         }}
                       />
                       <div className="text-[10px] mt-1 truncate">{svg.name}</div>
@@ -507,7 +461,7 @@ const App: React.FC = () => {
         )}
 
         {activeTab === "style" && currentSVG && (
-          <div className="p-4 h-full overflow-y-auto scrollbar-thin">
+          <div className="p-4 h-full overflow-y-auto">
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-semibold text-sm">Styling: {currentSVG.name}</h3>
               <button
@@ -545,7 +499,7 @@ const App: React.FC = () => {
                     type="color"
                     value={currentSVG.styles.fillColor}
                     onChange={(e) => updateSVGStyle({ fillColor: e.target.value })}
-                    className="color-picker"
+                    className="w-8 h-8 cursor-pointer"
                   />
                   <input
                     type="text"
@@ -564,7 +518,7 @@ const App: React.FC = () => {
                     type="color"
                     value={currentSVG.styles.strokeColor}
                     onChange={(e) => updateSVGStyle({ strokeColor: e.target.value })}
-                    className="color-picker"
+                    className="w-8 h-8 cursor-pointer"
                   />
                   <input
                     type="text"
@@ -635,7 +589,7 @@ const App: React.FC = () => {
         )}
 
         {activeTab === "presets" && (
-          <div className="p-4 h-full overflow-y-auto scrollbar-thin">
+          <div className="p-4 h-full overflow-y-auto">
             <h3 className="font-semibold text-sm mb-3">Color Presets</h3>
             <div className="grid grid-cols-5 gap-2">
               {COLOR_PRESETS.map(preset => (
@@ -674,17 +628,19 @@ const App: React.FC = () => {
           Reset
         </button>
         <button
-          className={`flex-1 py-1 text-xs rounded transition-colors ${copied ? 'bg-green-600' : 'bg-blue-600 hover:bg-blue-700'
-            }`}
+          className={`flex-1 py-1 text-xs rounded transition-colors ${
+            copied ? 'bg-green-600' : 'bg-blue-600 hover:bg-blue-700'
+          }`}
           onClick={copySVGCode}
           disabled={!currentSVG}
         >
-          {copied ? 'Copied!' : 'Copy CSS'}
+          {copied ? 'Copied!' : 'Copy SVG'}
         </button>
         <button
-          className={`flex-1 py-1 text-xs bg-green-600 rounded hover:bg-green-700 transition-colors ${isApplying ? 'opacity-50 cursor-not-allowed' : ''
-            }`}
-          onClick={applyStyleToWebflow}
+          className={`flex-1 py-1 text-xs bg-green-600 rounded hover:bg-green-700 transition-colors ${
+            isApplying ? 'opacity-50 cursor-not-allowed' : ''
+          }`}
+          onClick={applySVGToWebflow}
           disabled={!currentSVG || isApplying}
         >
           {isApplying ? (
