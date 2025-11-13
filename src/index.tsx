@@ -25,6 +25,7 @@ interface WFElement {
   setTag?: (tag: string) => Promise<null>;
   setAttribute?: (name: string, value: string) => Promise<null>;
   removeAttribute?: (name: string) => Promise<null>;
+  setHtml?: (html: string) => Promise<void>; // <-- added for inline HTML support
 
   // Children methods (only if children === true)
   append?: (presetOrElement: any) => Promise<WFElement>;
@@ -36,7 +37,7 @@ interface WFElement {
 declare const webflow:
   | {
       getSelectedElement: () => Promise<WFElement | null>;
-      elementPresets: { DOM: Promise<WFElement> };
+      elementPresets: { DOM: any };
       addElement: (el: WFElement) => Promise<void>;
       createStyle: (name: string) => Promise<WFStyle>;
       getStyleByName?: (name: string) => Promise<WFStyle | null>;
@@ -68,20 +69,35 @@ const DEFAULT_SVG_STYLE: SVGStyle = {
 };
 
 /* ---------------- Utils & Logging ---------------- */
-const LOG  = (...a: any[]) => console.log("[SVG-EXT]", ...a);
+const LOG = (...a: any[]) => console.log("[SVG-EXT]", ...a);
 const WARN = (...a: any[]) => console.warn("[SVG-EXT]", ...a);
-const ERR  = (...a: any[]) => console.error("[SVG-EXT]", ...a);
+const ERR = (...a: any[]) => console.error("[SVG-EXT]", ...a);
 
-const isFile = (x: unknown): x is File => !!x && typeof (x as File).name === "string" && typeof (x as File).type === "string";
+const isFile = (x: unknown): x is File =>
+  !!x && typeof (x as File).name === "string" && typeof (x as File).type === "string";
 const toText = (v: unknown): string => {
   if (v === null || v === undefined) return "-";
   if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return String(v);
-  try { const s = JSON.stringify(v); return s && s.length > 160 ? s.slice(0,158) + "…" : s || "[object]"; } catch { return "[object]"; }
+  try {
+    const s = JSON.stringify(v);
+    return s && s.length > 160 ? s.slice(0, 158) + "…" : s || "[object]";
+  } catch {
+    return "[object]";
+  }
 };
 
-const hasProp = (el: any, prop: "children" | "customAttributes" | "styles" | "textContent") => !!(el && el[prop]);
+const hasProp = (el: any, prop: "children" | "customAttributes" | "styles" | "textContent") =>
+  !!(el && el[prop]);
 const safeMeta = (el: any) =>
-  !el ? el : ({ id: el?.id, type: el?.type, tag: el?.tag, children: !!el?.children, customAttributes: !!el?.customAttributes });
+  !el
+    ? el
+    : {
+        id: el?.id,
+        type: el?.type,
+        tag: el?.tag,
+        children: !!el?.children,
+        customAttributes: !!el?.customAttributes,
+      };
 
 /* ---------------- SVG helpers ---------------- */
 const isValidSVG = (content: string): boolean => {
@@ -91,7 +107,9 @@ const isValidSVG = (content: string): boolean => {
     const svg = doc.querySelector("svg");
     const parseError = doc.querySelector("parsererror");
     return !!svg && !parseError;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 };
 const cleanSVGContent = (content: string): string => content.trim();
 
@@ -163,12 +181,16 @@ const lineToPath = (el: Element): string | null => {
 const pointsToArray = (pts: string | null): Array<[number, number]> => {
   if (!pts) return [];
   const arr: Array<[number, number]> = [];
-  pts.trim().split(/[\s,]+/).forEach((v, i, a) => {
-    if (i % 2 === 0 && i + 1 < a.length) {
-      const x = parseFloat(a[i]); const y = parseFloat(a[i + 1]);
-      if (Number.isFinite(x) && Number.isFinite(y)) arr.push([x, y]);
-    }
-  });
+  pts
+    .trim()
+    .split(/[\s,]+/)
+    .forEach((v, i, a) => {
+      if (i % 2 === 0 && i + 1 < a.length) {
+        const x = parseFloat(a[i]);
+        const y = parseFloat(a[i + 1]);
+        if (Number.isFinite(x) && Number.isFinite(y)) arr.push([x, y]);
+      }
+    });
   return arr;
 };
 const polylineToPath = (el: Element): string | null => {
@@ -183,14 +205,24 @@ const polygonToPath = (el: Element): string | null => {
 };
 
 /* ---- normalize to path-only; also count paths ---- */
-const normalizeSVGToPathOnly = (svgContent: string, styles: SVGStyle): { svg: string; count: number } => {
+const normalizeSVGToPathOnly = (
+  svgContent: string,
+  styles: SVGStyle
+): { svg: string; count: number } => {
   try {
     const parser = new DOMParser();
     const doc = parser.parseFromString(svgContent, "image/svg+xml");
     const inSvg = doc.querySelector("svg");
-    if (!inSvg) { WARN("normalize: no <svg> root"); return { svg: svgContent, count: 0 }; }
+    if (!inSvg) {
+      WARN("normalize: no <svg> root");
+      return { svg: svgContent, count: 0 };
+    }
 
-    const outDoc = document.implementation.createDocument("http://www.w3.org/2000/svg", "svg", null);
+    const outDoc = document.implementation.createDocument(
+      "http://www.w3.org/2000/svg",
+      "svg",
+      null
+    );
     const outSvg = outDoc.documentElement;
     outSvg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
 
@@ -200,7 +232,10 @@ const normalizeSVGToPathOnly = (svgContent: string, styles: SVGStyle): { svg: st
       const hAttr = inSvg.getAttribute("height");
       const w = wAttr ? parseFloat(String(wAttr).replace("px", "")) : NaN;
       const h = hAttr ? parseFloat(String(hAttr).replace("px", "")) : NaN;
-      viewBox = Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0 ? `0 0 ${w} ${h}` : "0 0 24 24";
+      viewBox =
+        Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0
+          ? `0 0 ${w} ${h}`
+          : "0 0 24 24";
     }
     outSvg.setAttribute("viewBox", viewBox);
     outSvg.setAttribute("preserveAspectRatio", "xMidYMid meet");
@@ -249,7 +284,10 @@ const normalizeSVGToPathOnly = (svgContent: string, styles: SVGStyle): { svg: st
 };
 
 /* ---- styled preview (non-destructive) ---- */
-const applyStylesToSVGForPreview = (svgContent: string, styles: SVGStyle): string => {
+const applyStylesToSVGForPreview = (
+  svgContent: string,
+  styles: SVGStyle
+): string => {
   try {
     const doc = new DOMParser().parseFromString(svgContent, "image/svg+xml");
     const svg = doc.querySelector("svg");
@@ -261,10 +299,15 @@ const applyStylesToSVGForPreview = (svgContent: string, styles: SVGStyle): strin
 
     svg.querySelectorAll("*").forEach((el) => {
       const tag = el.tagName.toLowerCase();
-      if (["path","circle","rect","ellipse","polygon","polyline"].includes(tag)) {
-        if (el.getAttribute("fill") !== "none") el.setAttribute("fill", styles.fillColor);
+      if (["path", "circle", "rect", "ellipse", "polygon", "polyline"].includes(tag)) {
+        if (el.getAttribute("fill") !== "none")
+          el.setAttribute("fill", styles.fillColor);
       }
-      if (["path","circle","rect","ellipse","line","polyline","polygon"].includes(tag)) {
+      if (
+        ["path", "circle", "rect", "ellipse", "line", "polyline", "polygon"].includes(
+          tag
+        )
+      ) {
         if (el.getAttribute("stroke") !== "none") {
           el.setAttribute("stroke", styles.strokeColor);
           el.setAttribute("stroke-width", String(styles.strokeWidth));
@@ -278,14 +321,17 @@ const applyStylesToSVGForPreview = (svgContent: string, styles: SVGStyle): strin
   }
 };
 
-/* ---------------- Building into Webflow (DOM Element path) ---------------- */
+/* ---------------- Building into Webflow (DOM Element helpers) ---------------- */
 
-// Keep references of created elements so we can restyle without reinserting
 type WFRef = { container: WFElement; svgRoot: WFElement; paths: WFElement[] };
 const wfRefs: Record<string, WFRef | undefined> = {};
 
 /** Create <tag> under parent via official sequence: append -> setTag -> setAttribute* */
-async function appendDomWithTag(parent: WFElement, tag: string, attrs?: Record<string, string>) {
+async function appendDomWithTag(
+  parent: WFElement,
+  tag: string,
+  attrs?: Record<string, string>
+) {
   if (!hasProp(parent, "children") || typeof parent.append !== "function") {
     throw new Error("Parent cannot host children");
   }
@@ -310,85 +356,6 @@ function attrsFrom(el: Element): Record<string, string> {
   return out;
 }
 
-/** Find insertion container: selected if can host children, else make a new DIV */
-async function getInsertionContainer(): Promise<WFElement> {
-  const selected = await webflow!.getSelectedElement();
-  LOG("Selected:", safeMeta(selected));
-  if (selected && hasProp(selected, "children")) {
-    return selected;
-  }
-  // Create fresh container on canvas
-  const root = await webflow!.elementPresets.DOM;
-  await webflow!.addElement(root);
-  await root.setTag?.("div");
-  if (hasProp(root, "customAttributes") && typeof root.setAttribute === "function") {
-    await root.setAttribute("data-inline-svg-container", "true");
-  }
-  LOG("Using new container:", safeMeta(root));
-  return root;
-}
-
-/** Apply whole normalized path-only SVG into Webflow and store refs */
-async function applySvgIntoWebflow(item: SVGItem, styles: SVGStyle, pathTarget: number | "all") {
-  const { svg, count } = normalizeSVGToPathOnly(item.svgContent, styles);
-  if (!count) {
-    WARN("No path(s) to insert.");
-    return;
-  }
-  // Parse normalized svg to DOM to enumerate paths + attributes
-  const parsed = new DOMParser().parseFromString(svg, "image/svg+xml");
-  const svgNode = parsed.querySelector("svg")!;
-  const pathNodes = Array.from(parsed.querySelectorAll("path"));
-
-  const container = await getInsertionContainer();
-
-  // Create <svg> root
-  const svgRoot = await appendDomWithTag(container, "svg", attrsFrom(svgNode));
-
-  // Create <path>s
-  const createdPaths: WFElement[] = [];
-  for (let i = 0; i < pathNodes.length; i++) {
-    if (pathTarget !== "all" && i !== pathTarget) continue; // only selected
-    const p = pathNodes[i]!;
-    const attrs = attrsFrom(p);
-    // ensure index attribute for later find
-    attrs["data-svg-ext-path-idx"] = String(i);
-    const wfPath = await appendDomWithTag(svgRoot, "path", attrs);
-    createdPaths.push(wfPath);
-  }
-
-  // Save references by item.id so we can re-style later
-  wfRefs[item.id] = { container, svgRoot, paths: createdPaths };
-
-  if (webflow?.notify) webflow.notify({ type: "Success", message: `Inserted ${createdPaths.length} path(s)` });
-  LOG("Applied into Webflow:", { container: safeMeta(container), root: safeMeta(svgRoot), paths: createdPaths.length });
-}
-
-/** Update attributes on previously created paths (if present) */
-async function restyleExistingInWebflow(item: SVGItem, styles: SVGStyle, pathTarget: number | "all") {
-  const ref = wfRefs[item.id];
-  if (!ref) return false;
-
-  const updateOne = async (el: WFElement) => {
-    if (!hasProp(el, "customAttributes") || typeof el.setAttribute !== "function") return;
-    await el.setAttribute("opacity", String(styles.opacity));
-    // fill / stroke: respect "none" if already none
-    // we can’t read attributes reliably without getAttribute API; we’ll just set:
-    await el.setAttribute("fill", styles.fillColor);
-    await el.setAttribute("stroke", styles.strokeColor);
-    await el.setAttribute("stroke-width", String(styles.strokeWidth));
-  };
-
-  if (pathTarget === "all") {
-    for (const p of ref.paths) await updateOne(p);
-  } else {
-    const p = ref.paths[pathTarget];
-    if (p) await updateOne(p);
-  }
-  if (webflow?.notify) webflow.notify({ type: "Success", message: "Updated styles" });
-  return true;
-}
-
 /* ---------------- React Component ---------------- */
 const App: React.FC = () => {
   // Session memory
@@ -404,8 +371,8 @@ const App: React.FC = () => {
   // Webflow API ready
   const [apiReady, setApiReady] = useState(false);
 
-  // Path selection
-  const [pathTarget, setPathTarget] = useState<number | "all">("all"); // "all" or specific index
+  // Path selection (still used for preview / normalization)
+  const [pathTarget, setPathTarget] = useState<number | "all">("all");
 
   // Auto-apply toggle
   const [autoApply, setAutoApply] = useState(true);
@@ -430,7 +397,9 @@ const App: React.FC = () => {
       if (alive) setTimeout(tick, 1200);
     };
     tick();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, [checkApiReady]);
 
   /* ---------------- Upload / Code ---------------- */
@@ -449,7 +418,12 @@ const App: React.FC = () => {
     setCurrent(item);
     setStyles({ ...DEFAULT_SVG_STYLE });
     setPathTarget("all");
-    LOG("Saved (session only):", { id: item.id, name: item.name, len: cleaned.length, paths: count });
+    LOG("Saved (session only):", {
+      id: item.id,
+      name: item.name,
+      len: cleaned.length,
+      paths: count,
+    });
   }, []);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -457,19 +431,34 @@ const App: React.FC = () => {
     if (!files || !files.length) return;
     setUploadError("");
     Array.from(files).forEach((maybe) => {
-      const file = isFile(maybe) ? maybe : null; if (!file) return;
+      const file = isFile(maybe) ? maybe : null;
+      if (!file) return;
       if (file.type === "image/svg+xml" || file.name.toLowerCase().endsWith(".svg")) {
         const reader = new FileReader();
         reader.onload = (ev) => {
           try {
             const res = ev.target?.result as string | ArrayBuffer | null;
-            const raw = typeof res === "string" ? res : res ? new TextDecoder().decode(res as ArrayBuffer) : "";
+            const raw =
+              typeof res === "string"
+                ? res
+                : res
+                ? new TextDecoder().decode(res as ArrayBuffer)
+                : "";
             const cleaned = cleanSVGContent(raw);
-            if (!isValidSVG(cleaned)) { setUploadError(`"${file.name}" is not a valid SVG`); ERR("invalid SVG"); return; }
+            if (!isValidSVG(cleaned)) {
+              setUploadError(`"${file.name}" is not a valid SVG`);
+              ERR("invalid SVG");
+              return;
+            }
             pushToMemory(file.name.replace(/\.svg$/i, ""), cleaned);
-          } catch (err) { setUploadError(`Error reading "${file.name}"`); ERR("reader err:", err); }
+          } catch (err) {
+            setUploadError(`Error reading "${file.name}"`);
+            ERR("reader err:", err);
+          }
         };
-        reader.onerror = () => { setUploadError(`Failed to read "${file.name}"`); };
+        reader.onerror = () => {
+          setUploadError(`Failed to read "${file.name}"`);
+        };
         reader.readAsText(file);
       } else {
         setUploadError("Please upload only .svg files");
@@ -478,22 +467,40 @@ const App: React.FC = () => {
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault(); setIsDragging(false); setUploadError("");
-    const files = e.dataTransfer.files as FileList | null; if (!files || !files.length) return;
+    e.preventDefault();
+    setIsDragging(false);
+    setUploadError("");
+    const files = e.dataTransfer.files as FileList | null;
+    if (!files || !files.length) return;
     Array.from(files).forEach((maybe) => {
-      const file = isFile(maybe) ? maybe : null; if (!file) return;
+      const file = isFile(maybe) ? maybe : null;
+      if (!file) return;
       if (file.type === "image/svg+xml" || file.name.toLowerCase().endsWith(".svg")) {
         const reader = new FileReader();
         reader.onload = (ev) => {
           try {
             const res = ev.target?.result as string | ArrayBuffer | null;
-            const raw = typeof res === "string" ? res : res ? new TextDecoder().decode(res as ArrayBuffer) : "";
+            const raw =
+              typeof res === "string"
+                ? res
+                : res
+                ? new TextDecoder().decode(res as ArrayBuffer)
+                : "";
             const cleaned = cleanSVGContent(raw);
-            if (!isValidSVG(cleaned)) { setUploadError(`"${file.name}" is not a valid SVG`); ERR("invalid SVG"); return; }
+            if (!isValidSVG(cleaned)) {
+              setUploadError(`"${file.name}" is not a valid SVG`);
+              ERR("invalid SVG");
+              return;
+            }
             pushToMemory(file.name.replace(/\.svg$/i, ""), cleaned);
-          } catch (err) { setUploadError(`Error reading "${file.name}"`); ERR("drop read err:", err); }
+          } catch (err) {
+            setUploadError(`Error reading "${file.name}"`);
+            ERR("drop read err:", err);
+          }
         };
-        reader.onerror = () => { setUploadError(`Failed to read "${file.name}"`); };
+        reader.onerror = () => {
+          setUploadError(`Failed to read "${file.name}"`);
+        };
         reader.readAsText(file);
       } else {
         setUploadError("Please drop only .svg files");
@@ -502,11 +509,17 @@ const App: React.FC = () => {
   };
 
   const handleSvgCodeUpload = () => {
-    if (!svgCode.trim()) { setUploadError("Please enter SVG code"); return; }
+    if (!svgCode.trim()) {
+      setUploadError("Please enter SVG code");
+      return;
+    }
     setUploadError("");
     try {
       const cleaned = cleanSVGContent(svgCode);
-      if (!isValidSVG(cleaned)) { setUploadError("Please enter valid SVG code containing <svg>"); return; }
+      if (!isValidSVG(cleaned)) {
+        setUploadError("Please enter valid SVG code containing <svg>");
+        return;
+      }
       pushToMemory("Custom SVG", cleaned);
       setSvgCode("");
     } catch {
@@ -523,8 +536,16 @@ const App: React.FC = () => {
         await navigator.clipboard.writeText(svg);
         webflow?.notify?.({ type: "Success", message: "SVG (path-only) copied" });
       } catch {
-        const ta = document.createElement("textarea"); ta.value = svg; document.body.appendChild(ta); ta.select();
-        try { document.execCommand("copy"); webflow?.notify?.({ type: "Success", message: "SVG (path-only) copied" }); } catch { /* noop */ }
+        const ta = document.createElement("textarea");
+        ta.value = svg;
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+          document.execCommand("copy");
+          webflow?.notify?.({ type: "Success", message: "SVG (path-only) copied" });
+        } catch {
+          /* noop */
+        }
         document.body.removeChild(ta);
       }
     };
@@ -536,31 +557,106 @@ const App: React.FC = () => {
     setPathTarget("all");
   };
 
-  /* ---------------- Apply to Webflow (DOM Element path) ---------------- */
-  const applyIntoWebflow = useCallback(async () => {
-    if (!current) return;
-    if (!checkApiReady()) { webflow?.notify?.({ type:"Warning", message:"Webflow API not ready" }); return; }
-
-    // If we already inserted this item, try to restyle in-place; else insert fresh.
-    const updated = await restyleExistingInWebflow(current, styles, pathTarget);
-    if (updated) return;
-
-    // Not present yet: insert now
-    try {
-      await applySvgIntoWebflow(current, styles, pathTarget);
-    } catch (e) {
-      ERR("Apply failed:", e);
-      webflow?.notify?.({ type:"Error", message:"Apply failed" });
+  /* ---------------- Handle Apply SVG (using setTag + setHtml) ---------------- */
+  const handleApplySVG = useCallback(async () => {
+    if (!current) {
+      WARN("No SVG selected");
+      return;
     }
-  }, [current, styles, pathTarget, checkApiReady]);
+    if (!checkApiReady()) {
+      webflow?.notify?.({
+        type: "Warning",
+        message: "Webflow API not ready",
+      });
+      return;
+    }
 
-  // Auto-apply debounce
+    try {
+      const selectedElement = await webflow!.getSelectedElement();
+      LOG("Selected element for apply:", safeMeta(selectedElement));
+
+      if (!selectedElement) {
+        WARN("Select an element first in Webflow");
+        webflow?.notify?.({
+          type: "Warning",
+          message: "Select an element in Webflow first",
+        });
+        return;
+      }
+
+      if (!hasProp(selectedElement, "children") || typeof selectedElement.append !== "function") {
+        WARN("Selected element cannot host children");
+        webflow?.notify?.({
+          type: "Error",
+          message: "Selected element cannot contain SVG",
+        });
+        return;
+      }
+
+      // 1. Create a new DOM element under the selected one
+      const domElement = await selectedElement.append(webflow!.elementPresets.DOM);
+      LOG("Created DOM child:", safeMeta(domElement));
+
+      // 2. Convert its tag to <svg>
+      if (typeof domElement.setTag === "function") {
+        await domElement.setTag("svg");
+      }
+
+      // 3. Parse current SVG and get inner tags (path/circle/etc.)
+      const cleaned = cleanSVGContent(current.svgContent);
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(cleaned, "image/svg+xml");
+      const svgEl = parsed.querySelector("svg");
+
+      if (!svgEl) {
+        WARN("No <svg> root in uploaded content");
+        webflow?.notify?.({
+          type: "Error",
+          message: "Invalid SVG: missing <svg> root",
+        });
+        return;
+      }
+
+      const innerSVG = svgEl.innerHTML;
+
+      // 4. Prefer setHtml if available
+      if (typeof domElement.setHtml === "function") {
+        await domElement.setHtml(innerSVG);
+      } else {
+        // Fallback: create children via appendDomWithTag
+        const children = Array.from(svgEl.children) as Element[];
+        for (const child of children) {
+          const tagName = child.tagName.toLowerCase();
+          const attrs = attrsFrom(child);
+          await appendDomWithTag(domElement, tagName, attrs);
+        }
+      }
+
+      webflow?.notify?.({
+        type: "Success",
+        message: "SVG applied inside SVG-tag DOM element",
+      });
+      LOG("SVG applied inside SVG-tag DOM element");
+    } catch (e) {
+      ERR("handleApplySVG failed:", e);
+      webflow?.notify?.({
+        type: "Error",
+        message: "Failed to apply SVG",
+      });
+    }
+  }, [current, checkApiReady]);
+
+  // Auto-apply debounce (uses handleApplySVG now)
   useEffect(() => {
     if (!autoApply || !current) return;
     if (applyDebounceRef.current) clearTimeout(applyDebounceRef.current);
-    applyDebounceRef.current = setTimeout(() => { void applyIntoWebflow(); }, 350);
-    return () => { if (applyDebounceRef.current) clearTimeout(applyDebounceRef.current); };
-  }, [autoApply, current, styles, pathTarget, applyIntoWebflow]);
+    applyDebounceRef.current = setTimeout(() => {
+      void handleApplySVG();
+    }, 350);
+    return () => {
+      if (applyDebounceRef.current) clearTimeout(applyDebounceRef.current);
+    };
+  }, [autoApply, current, styles, pathTarget, handleApplySVG]);
 
   /* ---------------- UI state ---------------- */
   const styledPreview = useMemo(() => {
@@ -582,15 +678,16 @@ const App: React.FC = () => {
           {(["file", "code"] as const).map((tab) => (
             <button
               key={tab}
-              className={`px-3 py-1 text-xs rounded-md transition-colors ${uploadTab === tab ? "bg-white text-blue-700 font-semibold shadow-sm" : "text-gray-600"}`}
+              className={`px-3 py-1 text-xs rounded-md transition-colors ${
+                uploadTab === tab
+                  ? "bg-white text-blue-700 font-semibold shadow-sm"
+                  : "text-gray-600"
+              }`}
               onClick={() => setUploadTab(tab)}
             >
               {tab === "file" ? "Upload / Drop" : "Paste SVG Code"}
             </button>
           ))}
-        </div>
-        <div className={`text-[11px] px-2 py-1 rounded ${apiReady ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
-          {apiReady ? "Designer API: Ready" : "Designer API: Not ready"}
         </div>
       </div>
 
@@ -599,25 +696,41 @@ const App: React.FC = () => {
         {/* Upload or Code */}
         {uploadTab === "file" ? (
           <div
-            className={`flex flex-col items-center justify-center p-6 text-center border-2 border-dashed rounded-lg ${isDragging ? "border-blue-400 bg-blue-50" : "border-gray-300"}`}
+            className={`flex flex-col items-center justify-center p-6 text-center border-2 border-dashed rounded-lg ${
+              isDragging ? "border-blue-400 bg-blue-50" : "border-gray-300"
+            }`}
             onDrop={handleDrop}
-            onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-            onDragLeave={(e) => { e.preventDefault(); setIsDragging(false); }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setIsDragging(true);
+            }}
+            onDragLeave={(e) => {
+              e.preventDefault();
+              setIsDragging(false);
+            }}
           >
             <div className="text-4xl mb-2">📁</div>
             <h3 className="font-semibold text-sm mb-1">Drop SVG files here</h3>
             <p className="text-xs text-gray-500 mb-3">or</p>
             <label className="bg-blue-600 text-white px-4 py-2 rounded text-xs cursor-pointer hover:bg-blue-700 transition-colors">
               Browse Files
-              <input type="file" multiple accept=".svg" onChange={handleFileUpload} className="hidden" />
+              <input
+                type="file"
+                multiple
+                accept=".svg"
+                onChange={handleFileUpload}
+                className="hidden"
+              />
             </label>
             <p className="text-xs text-gray-500 mt-3">Supports .svg files only</p>
             {uploadError && (
-              <div className="mt-3 p-2 bg-red-100 border border-red-300 text-red-700 text-xs rounded">{uploadError}</div>
+              <div className="mt-3 p-2 bg-red-100 border border-red-300 text-red-700 text-xs rounded">
+                {uploadError}
+              </div>
             )}
           </div>
         ) : (
-          <div className="flex flex-col">
+          <div className="flex  flex-col">
             <h3 className="font-semibold text-sm mb-2">Paste SVG Code</h3>
             <textarea
               value={svgCode}
@@ -633,7 +746,9 @@ const App: React.FC = () => {
               Save to Preview (Session only)
             </button>
             {uploadError && (
-              <div className="mt-3 p-2 bg-red-100 border border-red-300 text-red-700 text-xs rounded">{uploadError}</div>
+              <div className="mt-3 p-2 bg-red-100 border border-red-300 text-red-700 text-xs rounded">
+                {uploadError}
+              </div>
             )}
           </div>
         )}
@@ -641,18 +756,29 @@ const App: React.FC = () => {
         {/* Gallery */}
         {uploaded.length > 0 && (
           <div className="mt-4">
-            <h4 className="font-semibold text-xs mb-2">Session SVGs ({uploaded.length})</h4>
+            <h4 className="font-semibold text-xs mb-2">
+              Session SVGs ({uploaded.length})
+            </h4>
             <div className="grid grid-cols-3 gap-2 max-h-24 overflow-y-auto">
               {uploaded.map((it) => (
                 <button
                   key={it.id}
-                  className={`p-1 bg-white border rounded hover:shadow-md transition-all ${current?.id === it.id ? "border-blue-500 ring-2 ring-blue-200" : "border-gray-200"}`}
+                  className={`p-1 bg-white border rounded hover:shadow-md transition-all ${
+                    current?.id === it.id
+                      ? "border-blue-500 ring-2 ring-blue-200"
+                      : "border-gray-200"
+                  }`}
                   onClick={() => setCurrent(it)}
                   title={it.name}
                 >
                   <div
                     className="h-8 w-full bg-gray-100 rounded flex items-center justify-center"
-                    dangerouslySetInnerHTML={{ __html: applyStylesToSVGForPreview(it.svgContent, DEFAULT_SVG_STYLE) }}
+                    dangerouslySetInnerHTML={{
+                      __html: applyStylesToSVGForPreview(
+                        it.svgContent,
+                        DEFAULT_SVG_STYLE
+                      ),
+                    }}
                   />
                   <div className="text-[10px] mt-1 truncate">{it.name}</div>
                 </button>
@@ -667,20 +793,27 @@ const App: React.FC = () => {
             <div className="flex items-center justify-between mb-2">
               <div className="text-xs font-semibold">Styling: {current.name}</div>
               <label className="flex items-center gap-2 text-xs">
-                <input type="checkbox" checked={autoApply} onChange={(e) => setAutoApply(e.target.checked)} /> Auto-apply
+                <input
+                  type="checkbox"
+                  checked={autoApply}
+                  onChange={(e) => setAutoApply(e.target.checked)}
+                />{" "}
+                Auto-apply
               </label>
             </div>
 
             <div className="grid grid-cols-3 gap-3">
               <div className="bg-gray-100 rounded-lg p-3">
                 <div className="text-xs font-medium mb-1">Live Preview (styled)</div>
-                <div className="border rounded bg-white flex items-center justify-center" style={{ width: 140, height: 140 }}
-                  dangerouslySetInnerHTML={{ __html: styledPreview }} />
+                <div
+                  className="border rounded bg-white flex items-center justify-center"
+                  style={{ width: 140, height: 140 }}
+                  dangerouslySetInnerHTML={{ __html: styledPreview }}
+                />
               </div>
-             
             </div>
 
-            {/* Path selector */}
+            {/* Path selector + controls */}
             <div className="mt-3 grid grid-cols-3 gap-3">
               <div className="space-y-1">
                 <label className="text-xs font-medium">Target path</label>
@@ -695,18 +828,33 @@ const App: React.FC = () => {
                 >
                   <option value="all">All paths ({current.pathCount || "?"})</option>
                   {Array.from({ length: current.pathCount || 0 }).map((_, i) => (
-                    <option key={i} value={i}>Path #{i + 1}</option>
+                    <option key={i} value={i}>
+                      Path #{i + 1}
+                    </option>
                   ))}
                 </select>
-               
               </div>
 
               {/* Fill */}
               <div className="space-y-1">
                 <label className="text-xs font-medium">Fill</label>
                 <div className="flex items-center gap-2">
-                  <input type="color" value={styles.fillColor} onChange={(e) => setStyles((s) => ({ ...s, fillColor: e.target.value }))} className="w-8 h-8 cursor-pointer" />
-                  <input type="text" value={styles.fillColor} onChange={(e) => setStyles((s) => ({ ...s, fillColor: e.target.value }))} className="flex-1 text-xs border rounded px-2 py-1" />
+                  <input
+                    type="color"
+                    value={styles.fillColor}
+                    onChange={(e) =>
+                      setStyles((s) => ({ ...s, fillColor: e.target.value }))
+                    }
+                    className="w-8 h-8 cursor-pointer"
+                  />
+                  <input
+                    type="text"
+                    value={styles.fillColor}
+                    onChange={(e) =>
+                      setStyles((s) => ({ ...s, fillColor: e.target.value }))
+                    }
+                    className="flex-1 text-xs border rounded px-2 py-1"
+                  />
                 </div>
               </div>
 
@@ -714,31 +862,85 @@ const App: React.FC = () => {
               <div className="space-y-1">
                 <label className="text-xs font-medium">Stroke</label>
                 <div className="flex items-center gap-2">
-                  <input type="color" value={styles.strokeColor} onChange={(e) => setStyles((s) => ({ ...s, strokeColor: e.target.value }))} className="w-8 h-8 cursor-pointer" />
-                  <input type="text" value={styles.strokeColor} onChange={(e) => setStyles((s) => ({ ...s, strokeColor: e.target.value }))} className="flex-1 text-xs border rounded px-2 py-1" />
+                  <input
+                    type="color"
+                    value={styles.strokeColor}
+                    onChange={(e) =>
+                      setStyles((s) => ({ ...s, strokeColor: e.target.value }))
+                    }
+                    className="w-8 h-8 cursor-pointer"
+                  />
+                  <input
+                    type="text"
+                    value={styles.strokeColor}
+                    onChange={(e) =>
+                      setStyles((s) => ({ ...s, strokeColor: e.target.value }))
+                    }
+                    className="flex-1 text-xs border rounded px-2 py-1"
+                  />
                 </div>
               </div>
 
               {/* Stroke width */}
               <div className="space-y-1">
-                <label className="text-xs font-medium">Stroke Width: {styles.strokeWidth}px</label>
-                <input type="range" min={0} max={10} step={0.5} value={styles.strokeWidth} onChange={(e) => setStyles((s) => ({ ...s, strokeWidth: parseFloat(e.target.value) }))} className="w-full" />
+                <label className="text-xs font-medium">
+                  Stroke Width: {styles.strokeWidth}px
+                </label>
+                <input
+                  type="range"
+                  min={0}
+                  max={10}
+                  step={0.5}
+                  value={styles.strokeWidth}
+                  onChange={(e) =>
+                    setStyles((s) => ({
+                      ...s,
+                      strokeWidth: parseFloat(e.target.value),
+                    }))
+                  }
+                  className="w-full"
+                />
               </div>
 
               {/* Opacity */}
               <div className="space-y-1">
-                <label className="text-xs font-medium">Opacity: {styles.opacity}</label>
-                <input type="range" min={0} max={1} step={0.1} value={styles.opacity} onChange={(e) => setStyles((s) => ({ ...s, opacity: parseFloat(e.target.value) }))} className="w-full" />
+                <label className="text-xs font-medium">
+                  Opacity: {styles.opacity}
+                </label>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.1}
+                  value={styles.opacity}
+                  onChange={(e) =>
+                    setStyles((s) => ({
+                      ...s,
+                      opacity: parseFloat(e.target.value),
+                    }))
+                  }
+                  className="w-full"
+                />
               </div>
             </div>
 
             {/* Actions */}
             <div className="mt-3 flex gap-2">
-              <button className="px-3 py-1 text-xs rounded bg-gray-700 text-white hover:bg-gray-600" onClick={resetStyles}>Reset</button>
-              <button className="px-3 py-1 text-xs rounded bg-blue-600 text-white hover:bg-blue-700" onClick={copyNormalized}>Copy SVG (path-only)</button>
+              <button
+                className="px-3 py-1 text-xs rounded bg-gray-700 text-white hover:bg-gray-600"
+                onClick={resetStyles}
+              >
+                Reset
+              </button>
+              <button
+                className="px-3 py-1 text-xs rounded bg-blue-600 text-white hover:bg-blue-700"
+                onClick={copyNormalized}
+              >
+                Copy SVG (path-only)
+              </button>
               <button
                 className="px-3 py-1 text-xs rounded bg-green-600 text-white hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
-                onClick={() => void applyIntoWebflow()}
+                onClick={() => void handleApplySVG()}
                 disabled={!apiReady}
                 title={apiReady ? "Apply to Webflow" : "Designer API not ready"}
               >
@@ -753,5 +955,7 @@ const App: React.FC = () => {
 };
 
 /* ---- mount ---- */
-const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
+const root = ReactDOM.createRoot(
+  document.getElementById("root") as HTMLElement
+);
 root.render(<App />);
