@@ -677,12 +677,7 @@ const App: React.FC = () => {
                 <div className="border rounded bg-white flex items-center justify-center" style={{ width: 140, height: 140 }}
                   dangerouslySetInnerHTML={{ __html: styledPreview }} />
               </div>
-
-              <div className="bg-gray-100 rounded-lg p-3 col-span-2">
-                <div className="text-xs font-medium mb-1">Normalized (path-only) Preview</div>
-                <div className="border rounded bg-white flex items-center justify-center" style={{ width: 280, height: 140 }}
-                  dangerouslySetInnerHTML={{ __html: normalizedPreview }} />
-              </div>
+             
             </div>
 
             {/* Path selector */}
@@ -703,7 +698,7 @@ const App: React.FC = () => {
                     <option key={i} value={i}>Path #{i + 1}</option>
                   ))}
                 </select>
-                <p className="text-[11px] text-gray-500">Choose a specific path to style/apply, or “All paths”.</p>
+               
               </div>
 
               {/* Fill */}
