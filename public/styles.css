@@ -1,4 +1,4 @@
-/* Custom styles for the SVG Styler extension */
+/* Custom styles for the SVG Styler extension
 
 .svg-preview {
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));
@@ -17,6 +17,7 @@
 }
 
 /* Uploaded thumbnails */
+/*
 .preset-card svg {
   width: 24px !important;
   height: 24px !important;
@@ -127,3 +128,9 @@
     from { opacity: 0; transform: translateY(10px); }
     to { opacity: 1; transform: translateY(0); }
 }
+
+[data-svghost] { 
+  --svg-stroke: #1e40af;
+  --svg-stroke-width: 2;
+  --svg-opacity: 0.9;
+} */
