@@ -7,6 +7,9 @@ interface WFStyle {
   getProperties?: () => Promise<Record<string, string>>;
   getName?: () => Promise<string>;
 }
+
+type NamedValue = { name: string; value: string };
+
 interface WFElement {
   // Core identity
   id?: any;
@@ -25,7 +28,9 @@ interface WFElement {
   setTag?: (tag: string) => Promise<null>;
   setAttribute?: (name: string, value: string) => Promise<null>;
   removeAttribute?: (name: string) => Promise<null>;
-  setHtml?: (html: string) => Promise<void>; // <-- added for inline HTML support
+  getAttribute?: (name: string) => Promise<string | null>;
+  getAllAttributes?: () => Promise<NamedValue[]>;
+  setHtml?: (html: string) => Promise<void>; // (not using now, but kept for type)
 
   // Children methods (only if children === true)
   append?: (presetOrElement: any) => Promise<WFElement>;
@@ -34,6 +39,7 @@ interface WFElement {
   setStyles?: (styles: WFStyle[]) => Promise<void>;
   getStyles?: () => Promise<WFStyle[] | undefined>;
 }
+
 declare const webflow:
   | {
       getSelectedElement: () => Promise<WFElement | null>;
@@ -42,6 +48,7 @@ declare const webflow:
       createStyle: (name: string) => Promise<WFStyle>;
       getStyleByName?: (name: string) => Promise<WFStyle | null>;
       notify?: (opts: { type: "Success" | "Error" | "Warning"; message: string }) => Promise<void> | void;
+      getAllElements?: () => Promise<WFElement[]>;
     }
   | undefined;
 
@@ -75,16 +82,6 @@ const ERR = (...a: any[]) => console.error("[SVG-EXT]", ...a);
 
 const isFile = (x: unknown): x is File =>
   !!x && typeof (x as File).name === "string" && typeof (x as File).type === "string";
-const toText = (v: unknown): string => {
-  if (v === null || v === undefined) return "-";
-  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return String(v);
-  try {
-    const s = JSON.stringify(v);
-    return s && s.length > 160 ? s.slice(0, 158) + "…" : s || "[object]";
-  } catch {
-    return "[object]";
-  }
-};
 
 const hasProp = (el: any, prop: "children" | "customAttributes" | "styles" | "textContent") =>
   !!(el && el[prop]);
@@ -103,7 +100,7 @@ const safeMeta = (el: any) =>
 const isValidSVG = (content: string): boolean => {
   try {
     const parser = new DOMParser();
-    const doc = parser.parseFromString(content, "image/svg+xml"); // correct MIME
+    const doc = parser.parseFromString(content, "image/svg+xml");
     const svg = doc.querySelector("svg");
     const parseError = doc.querySelector("parsererror");
     return !!svg && !parseError;
@@ -256,7 +253,7 @@ const normalizeSVGToPathOnly = (
       if (d && d.trim()) {
         const p = outDoc.createElementNS("http://www.w3.org/2000/svg", "path");
         p.setAttribute("d", d);
-        // Use provided styles but honor explicit 'none'
+
         const origFill = el.getAttribute("fill");
         const origStroke = el.getAttribute("stroke");
         p.setAttribute("fill", origFill === "none" ? "none" : styles.fillColor);
@@ -268,7 +265,6 @@ const normalizeSVGToPathOnly = (
         }
         p.setAttribute("opacity", String(styles.opacity));
 
-        // mark each path with index so we can target it later
         p.setAttribute("data-svg-ext-path-idx", String(pathIdx));
         outSvg.appendChild(p);
         pathIdx++;
@@ -323,15 +319,11 @@ const applyStylesToSVGForPreview = (
 
 /* ---------------- Building into Webflow (DOM Element helpers) ---------------- */
 
-type WFRef = { container: WFElement; svgRoot: WFElement; paths: WFElement[] };
-const wfRefs: Record<string, WFRef | undefined> = {};
-
-/** Create <tag> under parent via official sequence: append -> setTag -> setAttribute* */
 async function appendDomWithTag(
   parent: WFElement,
   tag: string,
   attrs?: Record<string, string>
-) {
+): Promise<WFElement> {
   if (!hasProp(parent, "children") || typeof parent.append !== "function") {
     throw new Error("Parent cannot host children");
   }
@@ -339,9 +331,15 @@ async function appendDomWithTag(
   if (typeof domEl.setTag === "function") {
     await domEl.setTag(tag);
   }
-  if (attrs && hasProp(domEl, "customAttributes") && typeof domEl.setAttribute === "function") {
+  // tag meta update so logging me dikh jaye
+  domEl.tag = tag;
+
+  // IMPORTANT FIX: customAttributes flag ko ignore kar ke, direct setAttribute use kar rahe hain
+  if (attrs && typeof domEl.setAttribute === "function") {
     for (const [k, v] of Object.entries(attrs)) {
-      if (v != null && v !== "") await domEl.setAttribute(k, String(v));
+      if (v != null && v !== "") {
+        await domEl.setAttribute(k, String(v));
+      }
     }
   }
   return domEl;
@@ -378,6 +376,15 @@ const App: React.FC = () => {
   const [autoApply, setAutoApply] = useState(true);
   const applyDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Webflow SVG info (getTag + getAllAttributes)
+  const [wfSvgTag, setWfSvgTag] = useState<string | null>(null);
+  const [wfSvgAttrs, setWfSvgAttrs] = useState<NamedValue[]>([]);
+
+  // Shape coordinates extracted from SVG code
+  const [svgShapeAttrs, setSvgShapeAttrs] = useState<
+    { index: number; tag: string; attrs: Record<string, string> }[]
+  >([]);
+
   const checkApiReady = useCallback(() => {
     const ok =
       typeof webflow !== "undefined" &&
@@ -390,7 +397,6 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    // simple poll just to keep ready flag fresh
     let alive = true;
     const tick = async () => {
       checkApiReady();
@@ -404,7 +410,6 @@ const App: React.FC = () => {
 
   /* ---------------- Upload / Code ---------------- */
   const pushToMemory = useCallback((name: string, cleaned: string) => {
-    // count paths once so dropdown can be built
     const { count } = normalizeSVGToPathOnly(cleaned, DEFAULT_SVG_STYLE);
     const item: SVGItem = {
       id: `svg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
@@ -424,6 +429,9 @@ const App: React.FC = () => {
       len: cleaned.length,
       paths: count,
     });
+    setWfSvgTag(null);
+    setWfSvgAttrs([]);
+    setSvgShapeAttrs([]);
   }, []);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -557,7 +565,7 @@ const App: React.FC = () => {
     setPathTarget("all");
   };
 
-  /* ---------------- Handle Apply SVG (using setTag + setHtml) ---------------- */
+  /* ---------------- Handle Apply SVG (ONLY append + setAttribute; no setHtml) ---------------- */
   const handleApplySVG = useCallback(async () => {
     if (!current) {
       WARN("No SVG selected");
@@ -593,16 +601,15 @@ const App: React.FC = () => {
         return;
       }
 
-      // 1. Create a new DOM element under the selected one
-      const domElement = await selectedElement.append(webflow!.elementPresets.DOM);
-      LOG("Created DOM child:", safeMeta(domElement));
-
-      // 2. Convert its tag to <svg>
-      if (typeof domElement.setTag === "function") {
-        await domElement.setTag("svg");
+      // 1) Create new DOM under selected element
+      const svgDom = await selectedElement.append(webflow!.elementPresets.DOM);
+      if (typeof svgDom.setTag === "function") {
+        await svgDom.setTag("svg");
       }
+      svgDom.tag = "svg";
+      LOG("Created DOM child:", safeMeta(svgDom));
 
-      // 3. Parse current SVG and get inner tags (path/circle/etc.)
+      // 2) Parse current SVG code
       const cleaned = cleanSVGContent(current.svgContent);
       const parser = new DOMParser();
       const parsed = parser.parseFromString(cleaned, "image/svg+xml");
@@ -617,19 +624,54 @@ const App: React.FC = () => {
         return;
       }
 
-      const innerSVG = svgEl.innerHTML;
+      // 3) Root <svg> attributes via setAttribute (viewBox, width, height, fill, etc.)
+      if (typeof svgDom.setAttribute === "function") {
+        Array.from(svgEl.attributes).forEach((a) => {
+          void svgDom.setAttribute!(a.name, a.value);
+        });
+      }
 
-      // 4. Prefer setHtml if available
-      if (typeof domElement.setHtml === "function") {
-        await domElement.setHtml(innerSVG);
+      // 4) Shapes ke attributes (coords) original SVG se nikalna + Webflow DOM me banana
+      const shapeNodes = svgEl.querySelectorAll(
+        "path,rect,circle,ellipse,line,polygon,polyline"
+      );
+      const shapes: { index: number; tag: string; attrs: Record<string, string> }[] = [];
+
+      let idx = 0;
+      for (const node of Array.from(shapeNodes)) {
+        const tagName = node.tagName.toLowerCase();
+        const attrs = attrsFrom(node); // isme d / cx / cy / r / x / y sab aa jayega
+
+        // Webflow DOM me child create karo (exact docs style: append + setTag + setAttribute)
+        const child = await appendDomWithTag(svgDom, tagName, attrs);
+
+        // Agar chaho to yahan se bhi getAllAttributes le sakte ho (from Webflow side),
+        // lekin attrs already original SVG se aa chuka hai.
+        shapes.push({
+          index: idx,
+          tag: tagName,
+          attrs,
+        });
+        idx++;
+      }
+
+      setSvgShapeAttrs(shapes); // UI me coordinates table ke liye
+
+      // 5) getTag + getAllAttributes root SVG se (docs jaisa)
+      if (typeof svgDom.getTag === "function") {
+        const tag = await svgDom.getTag();
+        setWfSvgTag(tag);
+        console.log("[SVG-EXT] Webflow SVG tag:", tag);
       } else {
-        // Fallback: create children via appendDomWithTag
-        const children = Array.from(svgEl.children) as Element[];
-        for (const child of children) {
-          const tagName = child.tagName.toLowerCase();
-          const attrs = attrsFrom(child);
-          await appendDomWithTag(domElement, tagName, attrs);
-        }
+        setWfSvgTag(null);
+      }
+
+      if (typeof svgDom.getAllAttributes === "function") {
+        const attributes = await svgDom.getAllAttributes();
+        setWfSvgAttrs(attributes);
+        console.log("[SVG-EXT] Webflow SVG attributes:", attributes);
+      } else {
+        setWfSvgAttrs([]);
       }
 
       webflow?.notify?.({
@@ -646,7 +688,7 @@ const App: React.FC = () => {
     }
   }, [current, checkApiReady]);
 
-  // Auto-apply debounce (uses handleApplySVG now)
+  // Auto-apply debounce
   useEffect(() => {
     if (!autoApply || !current) return;
     if (applyDebounceRef.current) clearTimeout(applyDebounceRef.current);
@@ -658,7 +700,7 @@ const App: React.FC = () => {
     };
   }, [autoApply, current, styles, pathTarget, handleApplySVG]);
 
-  /* ---------------- UI state ---------------- */
+  /* ---------------- Derived values for UI ---------------- */
   const styledPreview = useMemo(() => {
     if (!current) return "";
     return applyStylesToSVGForPreview(current.svgContent, styles);
@@ -669,10 +711,22 @@ const App: React.FC = () => {
     return normalizeSVGToPathOnly(current.svgContent, styles).svg;
   }, [current, styles]);
 
+  const wfSvgViewBox = useMemo(() => {
+    if (!wfSvgAttrs || wfSvgAttrs.length === 0) return null;
+    const vb = wfSvgAttrs.find((a) => a.name === "viewBox");
+    if (!vb) return null;
+    const parts = vb.value
+      .trim()
+      .split(/[\s,]+/)
+      .map((v) => parseFloat(v))
+      .filter((n) => Number.isFinite(n));
+    return { raw: vb.value, parts };
+  }, [wfSvgAttrs]);
+
   /* ---------------- UI ---------------- */
   return (
     <div className="h-[560px] bg-white shadow-xl overflow-hidden flex flex-col">
-      {/* Header: tabs + status */}
+      {/* Header */}
       <div className="p-2 bg-gray-100 flex items-center justify-between">
         <div className="grid grid-cols-2 gap-1">
           {(["file", "code"] as const).map((tab) => (
@@ -730,7 +784,7 @@ const App: React.FC = () => {
             )}
           </div>
         ) : (
-          <div className="flex  flex-col">
+          <div className="flex flex-col">
             <h3 className="font-semibold text-sm mb-2">Paste SVG Code</h3>
             <textarea
               value={svgCode}
@@ -946,6 +1000,76 @@ const App: React.FC = () => {
               >
                 Apply to Webflow
               </button>
+            </div>
+
+            {/* Webflow SVG + Coordinates UI */}
+            <div className="mt-4 space-y-2">
+              <div className="text-xs font-semibold">Webflow SVG Element (Canvas)</div>
+              <div className="text-[11px] border rounded p-2 bg-gray-50">
+                <div>
+                  <span className="font-medium">Tag:</span>{" "}
+                  {wfSvgTag ?? "-"}
+                </div>
+                <div className="mt-1">
+                  <span className="font-medium">Attributes:</span>{" "}
+                  {wfSvgAttrs.length === 0 ? (
+                    <span>(none)</span>
+                  ) : (
+                    <ul className="list-disc ml-4">
+                      {wfSvgAttrs.map((a, idx) => (
+                        <li key={idx}>
+                          {a.name}: {a.value}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                {wfSvgViewBox && (
+                  <div className="mt-2">
+                    <div className="font-medium">viewBox (coordinates)</div>
+                    <div>raw: {wfSvgViewBox.raw}</div>
+                    {wfSvgViewBox.parts.length === 4 && (
+                      <div>
+                        x: {wfSvgViewBox.parts[0]}, y: {wfSvgViewBox.parts[1]}, width:{" "}
+                        {wfSvgViewBox.parts[2]}, height: {wfSvgViewBox.parts[3]}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="text-xs font-semibold mt-2">
+                SVG Inner Shapes (coordinates / attributes)
+              </div>
+              <div className="max-h-28 overflow-auto text-[11px] border rounded p-2 bg-gray-50">
+                {svgShapeAttrs.length === 0 ? (
+                  <div>No shapes found under &lt;svg&gt;</div>
+                ) : (
+                  <table className="w-full border-collapse">
+                    <thead>
+                      <tr>
+                        <th className="border-b text-left pr-2">#</th>
+                        <th className="border-b text-left pr-2">Tag</th>
+                        <th className="border-b text-left">Attributes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {svgShapeAttrs.map((s) => (
+                        <tr key={s.index}>
+                          <td className="align-top pr-2">{s.index}</td>
+                          <td className="align-top pr-2">{s.tag}</td>
+                          <td className="align-top">
+                            {Object.entries(s.attrs)
+                              .map(([k, v]) => `${k}=${v}`)
+                              .join("; ")}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
             </div>
           </div>
         )}
