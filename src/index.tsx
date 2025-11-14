@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom/client";
 
 /* ---------------- Webflow Designer minimal typings ---------------- */
@@ -331,12 +331,11 @@ async function appendDomWithTag(
   if (typeof domEl.setTag === "function") {
     await domEl.setTag(tag);
   }
-  // tag meta update so logging me dikh jaye
   domEl.tag = tag;
 
-  // IMPORTANT FIX: customAttributes flag ko ignore kar ke, direct setAttribute use kar rahe hain
   if (attrs && typeof domEl.setAttribute === "function") {
-    for (const [k, v] of Object.entries(attrs)) {
+    const entries = Object.entries(attrs);
+    for (const [k, v] of entries) {
       if (v != null && v !== "") {
         await domEl.setAttribute(k, String(v));
       }
@@ -372,18 +371,8 @@ const App: React.FC = () => {
   // Path selection (still used for preview / normalization)
   const [pathTarget, setPathTarget] = useState<number | "all">("all");
 
-  // Auto-apply toggle
-  const [autoApply, setAutoApply] = useState(true);
-  const applyDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Webflow SVG info (getTag + getAllAttributes)
-  const [wfSvgTag, setWfSvgTag] = useState<string | null>(null);
-  const [wfSvgAttrs, setWfSvgAttrs] = useState<NamedValue[]>([]);
-
-  // Shape coordinates extracted from SVG code
-  const [svgShapeAttrs, setSvgShapeAttrs] = useState<
-    { index: number; tag: string; attrs: Record<string, string> }[]
-  >([]);
+  // kis SVG content par already auto-apply ho chuka hai
+  const [autoAppliedKeys, setAutoAppliedKeys] = useState<string[]>([]);
 
   const checkApiReady = useCallback(() => {
     const ok =
@@ -391,7 +380,6 @@ const App: React.FC = () => {
       !!webflow &&
       typeof webflow.getSelectedElement === "function" &&
       webflow.elementPresets?.DOM;
-    if (!ok) WARN("API not ready");
     setApiReady(!!ok);
     return ok;
   }, []);
@@ -408,31 +396,132 @@ const App: React.FC = () => {
     };
   }, [checkApiReady]);
 
+  /* ---------------- Handle Apply SVG (fast-ish, batch children) ---------------- */
+  const handleApplySVG = useCallback(async () => {
+    if (!current) {
+      WARN("No SVG selected");
+      return;
+    }
+    if (!checkApiReady()) {
+      webflow?.notify?.({
+        type: "Warning",
+        message: "Webflow API not ready",
+      });
+      return;
+    }
+
+    try {
+      const selectedElement = await webflow!.getSelectedElement();
+      if (!selectedElement) {
+        WARN("Select an element first in Webflow");
+        webflow?.notify?.({
+          type: "Warning",
+          message: "Select an element in Webflow first",
+        });
+        return;
+      }
+
+      if (!hasProp(selectedElement, "children") || typeof selectedElement.append !== "function") {
+        WARN("Selected element cannot host children");
+        webflow?.notify?.({
+          type: "Error",
+          message: "Selected element cannot contain SVG",
+        });
+        return;
+      }
+
+      // 1) Create new DOM under selected element
+      const svgDom = await selectedElement.append(webflow!.elementPresets.DOM);
+      if (typeof svgDom.setTag === "function") {
+        await svgDom.setTag("svg");
+      }
+      svgDom.tag = "svg";
+
+      // 2) Parse current SVG code
+      const cleaned = cleanSVGContent(current.svgContent);
+      const parser = new DOMParser();
+      const parsed = parser.parseFromString(cleaned, "image/svg+xml");
+      const svgEl = parsed.querySelector("svg");
+
+      if (!svgEl) {
+        WARN("No <svg> root in uploaded content");
+        webflow?.notify?.({
+          type: "Error",
+          message: "Invalid SVG: missing <svg> root",
+        });
+        return;
+      }
+
+      // 3) Root <svg> attributes via setAttribute (viewBox, width, height, fill, etc.)
+      if (typeof svgDom.setAttribute === "function") {
+        const attrs = Array.from(svgEl.attributes);
+        for (const a of attrs) {
+          await svgDom.setAttribute(a.name, a.value);
+        }
+      }
+
+      // 4) Shapes ke attributes original SVG se nikalna + Webflow DOM me banana
+      const shapeNodes = svgEl.querySelectorAll(
+        "path,rect,circle,ellipse,line,polygon,polyline"
+      );
+
+      const shapes: { index: number; tag: string; attrs: Record<string, string> }[] = [];
+      const childPromises: Promise<unknown>[] = [];
+
+      let idx = 0;
+      for (const node of Array.from(shapeNodes)) {
+        const tagName = node.tagName.toLowerCase();
+        const attrs = attrsFrom(node);
+
+        shapes.push({
+          index: idx,
+          tag: tagName,
+          attrs,
+        });
+
+        childPromises.push(appendDomWithTag(svgDom, tagName, attrs));
+        idx++;
+      }
+
+      // ek hi baar wait karke sari shapes create ho jaayengi
+      await Promise.all(childPromises);
+
+      // optional: yaha shapes UI me dikhane ke liye state rakh sakte ho
+      // abhi tumne shapes/coords UI nahi manga, isliye skip kar diya
+
+      webflow?.notify?.({
+        type: "Success",
+        message: "SVG applied to selected element",
+      });
+    } catch (e) {
+      ERR("handleApplySVG failed:", e);
+      webflow?.notify?.({
+        type: "Error",
+        message: "Failed to apply SVG",
+      });
+    }
+  }, [current, checkApiReady]);
+
   /* ---------------- Upload / Code ---------------- */
-  const pushToMemory = useCallback((name: string, cleaned: string) => {
-    const { count } = normalizeSVGToPathOnly(cleaned, DEFAULT_SVG_STYLE);
-    const item: SVGItem = {
-      id: `svg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-      name,
-      svgContent: cleaned,
-      styles: { ...DEFAULT_SVG_STYLE },
-      createdAt: Date.now(),
-      pathCount: count,
-    };
-    setUploaded((prev) => [item, ...prev]);
-    setCurrent(item);
-    setStyles({ ...DEFAULT_SVG_STYLE });
-    setPathTarget("all");
-    LOG("Saved (session only):", {
-      id: item.id,
-      name: item.name,
-      len: cleaned.length,
-      paths: count,
-    });
-    setWfSvgTag(null);
-    setWfSvgAttrs([]);
-    setSvgShapeAttrs([]);
-  }, []);
+  const pushToMemory = useCallback(
+    (name: string, cleaned: string) => {
+      const { count } = normalizeSVGToPathOnly(cleaned, DEFAULT_SVG_STYLE);
+      const item: SVGItem = {
+        id: `svg-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        name,
+        svgContent: cleaned,
+        styles: { ...DEFAULT_SVG_STYLE },
+        createdAt: Date.now(),
+        pathCount: count,
+      };
+      setUploaded((prev) => [item, ...prev]);
+      setCurrent(item);
+      setStyles({ ...DEFAULT_SVG_STYLE });
+      setPathTarget("all");
+      LOG("Saved SVG:", { name: item.name, paths: count });
+    },
+    []
+  );
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files as FileList | null;
@@ -455,7 +544,6 @@ const App: React.FC = () => {
             const cleaned = cleanSVGContent(raw);
             if (!isValidSVG(cleaned)) {
               setUploadError(`"${file.name}" is not a valid SVG`);
-              ERR("invalid SVG");
               return;
             }
             pushToMemory(file.name.replace(/\.svg$/i, ""), cleaned);
@@ -497,7 +585,6 @@ const App: React.FC = () => {
             const cleaned = cleanSVGContent(raw);
             if (!isValidSVG(cleaned)) {
               setUploadError(`"${file.name}" is not a valid SVG`);
-              ERR("invalid SVG");
               return;
             }
             pushToMemory(file.name.replace(/\.svg$/i, ""), cleaned);
@@ -535,6 +622,17 @@ const App: React.FC = () => {
     }
   };
 
+  /* ---------------- Auto-apply logic (first time per SVG content) ---------------- */
+  useEffect(() => {
+    if (!current) return;
+    const key = current.svgContent;
+    if (autoAppliedKeys.includes(key)) return;
+
+    setAutoAppliedKeys((prev) => (prev.includes(key) ? prev : [...prev, key]));
+    void handleApplySVG();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current, handleApplySVG, autoAppliedKeys]);
+
   /* ---------------- Copy & Reset ---------------- */
   const copyNormalized = () => {
     if (!current) return;
@@ -565,141 +663,6 @@ const App: React.FC = () => {
     setPathTarget("all");
   };
 
-  /* ---------------- Handle Apply SVG (ONLY append + setAttribute; no setHtml) ---------------- */
-  const handleApplySVG = useCallback(async () => {
-    if (!current) {
-      WARN("No SVG selected");
-      return;
-    }
-    if (!checkApiReady()) {
-      webflow?.notify?.({
-        type: "Warning",
-        message: "Webflow API not ready",
-      });
-      return;
-    }
-
-    try {
-      const selectedElement = await webflow!.getSelectedElement();
-      LOG("Selected element for apply:", safeMeta(selectedElement));
-
-      if (!selectedElement) {
-        WARN("Select an element first in Webflow");
-        webflow?.notify?.({
-          type: "Warning",
-          message: "Select an element in Webflow first",
-        });
-        return;
-      }
-
-      if (!hasProp(selectedElement, "children") || typeof selectedElement.append !== "function") {
-        WARN("Selected element cannot host children");
-        webflow?.notify?.({
-          type: "Error",
-          message: "Selected element cannot contain SVG",
-        });
-        return;
-      }
-
-      // 1) Create new DOM under selected element
-      const svgDom = await selectedElement.append(webflow!.elementPresets.DOM);
-      if (typeof svgDom.setTag === "function") {
-        await svgDom.setTag("svg");
-      }
-      svgDom.tag = "svg";
-      LOG("Created DOM child:", safeMeta(svgDom));
-
-      // 2) Parse current SVG code
-      const cleaned = cleanSVGContent(current.svgContent);
-      const parser = new DOMParser();
-      const parsed = parser.parseFromString(cleaned, "image/svg+xml");
-      const svgEl = parsed.querySelector("svg");
-
-      if (!svgEl) {
-        WARN("No <svg> root in uploaded content");
-        webflow?.notify?.({
-          type: "Error",
-          message: "Invalid SVG: missing <svg> root",
-        });
-        return;
-      }
-
-      // 3) Root <svg> attributes via setAttribute (viewBox, width, height, fill, etc.)
-      if (typeof svgDom.setAttribute === "function") {
-        Array.from(svgEl.attributes).forEach((a) => {
-          void svgDom.setAttribute!(a.name, a.value);
-        });
-      }
-
-      // 4) Shapes ke attributes (coords) original SVG se nikalna + Webflow DOM me banana
-      const shapeNodes = svgEl.querySelectorAll(
-        "path,rect,circle,ellipse,line,polygon,polyline"
-      );
-      const shapes: { index: number; tag: string; attrs: Record<string, string> }[] = [];
-
-      let idx = 0;
-      for (const node of Array.from(shapeNodes)) {
-        const tagName = node.tagName.toLowerCase();
-        const attrs = attrsFrom(node); // isme d / cx / cy / r / x / y sab aa jayega
-
-        // Webflow DOM me child create karo (exact docs style: append + setTag + setAttribute)
-        const child = await appendDomWithTag(svgDom, tagName, attrs);
-
-        // Agar chaho to yahan se bhi getAllAttributes le sakte ho (from Webflow side),
-        // lekin attrs already original SVG se aa chuka hai.
-        shapes.push({
-          index: idx,
-          tag: tagName,
-          attrs,
-        });
-        idx++;
-      }
-
-      setSvgShapeAttrs(shapes); // UI me coordinates table ke liye
-
-      // 5) getTag + getAllAttributes root SVG se (docs jaisa)
-      if (typeof svgDom.getTag === "function") {
-        const tag = await svgDom.getTag();
-        setWfSvgTag(tag);
-        console.log("[SVG-EXT] Webflow SVG tag:", tag);
-      } else {
-        setWfSvgTag(null);
-      }
-
-      if (typeof svgDom.getAllAttributes === "function") {
-        const attributes = await svgDom.getAllAttributes();
-        setWfSvgAttrs(attributes);
-        console.log("[SVG-EXT] Webflow SVG attributes:", attributes);
-      } else {
-        setWfSvgAttrs([]);
-      }
-
-      webflow?.notify?.({
-        type: "Success",
-        message: "SVG applied inside SVG-tag DOM element",
-      });
-      LOG("SVG applied inside SVG-tag DOM element");
-    } catch (e) {
-      ERR("handleApplySVG failed:", e);
-      webflow?.notify?.({
-        type: "Error",
-        message: "Failed to apply SVG",
-      });
-    }
-  }, [current, checkApiReady]);
-
-  // Auto-apply debounce
-  useEffect(() => {
-    if (!autoApply || !current) return;
-    if (applyDebounceRef.current) clearTimeout(applyDebounceRef.current);
-    applyDebounceRef.current = setTimeout(() => {
-      void handleApplySVG();
-    }, 350);
-    return () => {
-      if (applyDebounceRef.current) clearTimeout(applyDebounceRef.current);
-    };
-  }, [autoApply, current, styles, pathTarget, handleApplySVG]);
-
   /* ---------------- Derived values for UI ---------------- */
   const styledPreview = useMemo(() => {
     if (!current) return "";
@@ -710,18 +673,6 @@ const App: React.FC = () => {
     if (!current) return "";
     return normalizeSVGToPathOnly(current.svgContent, styles).svg;
   }, [current, styles]);
-
-  const wfSvgViewBox = useMemo(() => {
-    if (!wfSvgAttrs || wfSvgAttrs.length === 0) return null;
-    const vb = wfSvgAttrs.find((a) => a.name === "viewBox");
-    if (!vb) return null;
-    const parts = vb.value
-      .trim()
-      .split(/[\s,]+/)
-      .map((v) => parseFloat(v))
-      .filter((n) => Number.isFinite(n));
-    return { raw: vb.value, parts };
-  }, [wfSvgAttrs]);
 
   /* ---------------- UI ---------------- */
   return (
@@ -745,7 +696,7 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      {/* Body */}
+      {/* Body (single scrollbar yahan pe hi rahe) */}
       <div className="flex-1 overflow-auto p-4">
         {/* Upload or Code */}
         {uploadTab === "file" ? (
@@ -807,13 +758,13 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Gallery */}
+        {/* Gallery (no inner scrollbar, outer panel scroll karega) */}
         {uploaded.length > 0 && (
           <div className="mt-4">
             <h4 className="font-semibold text-xs mb-2">
               Session SVGs ({uploaded.length})
             </h4>
-            <div className="grid grid-cols-3 gap-2 max-h-24 overflow-y-auto">
+            <div className="grid grid-cols-3 gap-2">
               {uploaded.map((it) => (
                 <button
                   key={it.id}
@@ -846,14 +797,6 @@ const App: React.FC = () => {
           <div className="mt-6">
             <div className="flex items-center justify-between mb-2">
               <div className="text-xs font-semibold">Styling: {current.name}</div>
-              <label className="flex items-center gap-2 text-xs">
-                <input
-                  type="checkbox"
-                  checked={autoApply}
-                  onChange={(e) => setAutoApply(e.target.checked)}
-                />{" "}
-                Auto-apply
-              </label>
             </div>
 
             <div className="grid grid-cols-3 gap-3">
@@ -1000,76 +943,6 @@ const App: React.FC = () => {
               >
                 Apply to Webflow
               </button>
-            </div>
-
-            {/* Webflow SVG + Coordinates UI */}
-            <div className="mt-4 space-y-2">
-              <div className="text-xs font-semibold">Webflow SVG Element (Canvas)</div>
-              <div className="text-[11px] border rounded p-2 bg-gray-50">
-                <div>
-                  <span className="font-medium">Tag:</span>{" "}
-                  {wfSvgTag ?? "-"}
-                </div>
-                <div className="mt-1">
-                  <span className="font-medium">Attributes:</span>{" "}
-                  {wfSvgAttrs.length === 0 ? (
-                    <span>(none)</span>
-                  ) : (
-                    <ul className="list-disc ml-4">
-                      {wfSvgAttrs.map((a, idx) => (
-                        <li key={idx}>
-                          {a.name}: {a.value}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-
-                {wfSvgViewBox && (
-                  <div className="mt-2">
-                    <div className="font-medium">viewBox (coordinates)</div>
-                    <div>raw: {wfSvgViewBox.raw}</div>
-                    {wfSvgViewBox.parts.length === 4 && (
-                      <div>
-                        x: {wfSvgViewBox.parts[0]}, y: {wfSvgViewBox.parts[1]}, width:{" "}
-                        {wfSvgViewBox.parts[2]}, height: {wfSvgViewBox.parts[3]}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              <div className="text-xs font-semibold mt-2">
-                SVG Inner Shapes (coordinates / attributes)
-              </div>
-              <div className="max-h-28 overflow-auto text-[11px] border rounded p-2 bg-gray-50">
-                {svgShapeAttrs.length === 0 ? (
-                  <div>No shapes found under &lt;svg&gt;</div>
-                ) : (
-                  <table className="w-full border-collapse">
-                    <thead>
-                      <tr>
-                        <th className="border-b text-left pr-2">#</th>
-                        <th className="border-b text-left pr-2">Tag</th>
-                        <th className="border-b text-left">Attributes</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {svgShapeAttrs.map((s) => (
-                        <tr key={s.index}>
-                          <td className="align-top pr-2">{s.index}</td>
-                          <td className="align-top pr-2">{s.tag}</td>
-                          <td className="align-top">
-                            {Object.entries(s.attrs)
-                              .map(([k, v]) => `${k}=${v}`)
-                              .join("; ")}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
             </div>
           </div>
         )}
