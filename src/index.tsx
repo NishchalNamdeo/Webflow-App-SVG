@@ -1,4 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import ReactDOM from "react-dom/client";
 
 /* ---------------- Webflow Designer minimal typings ---------------- */
@@ -30,7 +35,7 @@ interface WFElement {
   removeAttribute?: (name: string) => Promise<null>;
   getAttribute?: (name: string) => Promise<string | null>;
   getAllAttributes?: () => Promise<NamedValue[]>;
-  setHtml?: (html: string) => Promise<void>; // (not using now, but kept for type)
+  setHtml?: (html: string) => Promise<void>;
 
   // Children methods (only if children === true)
   append?: (presetOrElement: any) => Promise<WFElement>;
@@ -42,14 +47,17 @@ interface WFElement {
 
 declare const webflow:
   | {
-      getSelectedElement: () => Promise<WFElement | null>;
-      elementPresets: { DOM: any };
-      addElement: (el: WFElement) => Promise<void>;
-      createStyle: (name: string) => Promise<WFStyle>;
-      getStyleByName?: (name: string) => Promise<WFStyle | null>;
-      notify?: (opts: { type: "Success" | "Error" | "Warning"; message: string }) => Promise<void> | void;
-      getAllElements?: () => Promise<WFElement[]>;
-    }
+    getSelectedElement: () => Promise<WFElement | null>;
+    elementPresets: { DOM: any };
+    addElement: (el: WFElement) => Promise<void>;
+    createStyle: (name: string) => Promise<WFStyle>;
+    getStyleByName?: (name: string) => Promise<WFStyle | null>;
+    notify?: (opts: {
+      type: "Success" | "Error" | "Warning";
+      message: string;
+    }) => Promise<void> | void;
+    getAllElements?: () => Promise<WFElement[]>;
+  }
   | undefined;
 
 /* ---------------- Types ---------------- */
@@ -71,7 +79,7 @@ interface SVGItem {
 const DEFAULT_SVG_STYLE: SVGStyle = {
   fillColor: "#3b82f6",
   strokeColor: "#1e40af",
-  strokeWidth: 2,
+  strokeWidth: 1,
   opacity: 1,
 };
 
@@ -83,18 +91,21 @@ const ERR = (...a: any[]) => console.error("[SVG-EXT]", ...a);
 const isFile = (x: unknown): x is File =>
   !!x && typeof (x as File).name === "string" && typeof (x as File).type === "string";
 
-const hasProp = (el: any, prop: "children" | "customAttributes" | "styles" | "textContent") =>
-  !!(el && el[prop]);
+const hasProp = (
+  el: any,
+  prop: "children" | "customAttributes" | "styles" | "textContent"
+) => !!(el && el[prop]);
+
 const safeMeta = (el: any) =>
   !el
     ? el
     : {
-        id: el?.id,
-        type: el?.type,
-        tag: el?.tag,
-        children: !!el?.children,
-        customAttributes: !!el?.customAttributes,
-      };
+      id: el?.id,
+      type: el?.type,
+      tag: el?.tag,
+      children: !!el?.children,
+      customAttributes: !!el?.customAttributes,
+    };
 
 /* ---------------- SVG helpers ---------------- */
 const isValidSVG = (content: string): boolean => {
@@ -368,9 +379,6 @@ const App: React.FC = () => {
   // Webflow API ready
   const [apiReady, setApiReady] = useState(false);
 
-  // Path selection (still used for preview / normalization)
-  const [pathTarget, setPathTarget] = useState<number | "all">("all");
-
   // kis SVG content par already auto-apply ho chuka hai
   const [autoAppliedKeys, setAutoAppliedKeys] = useState<string[]>([]);
 
@@ -396,7 +404,92 @@ const App: React.FC = () => {
     };
   }, [checkApiReady]);
 
-  /* ---------------- Handle Apply SVG (fast-ish, batch children) ---------------- */
+  /* ---------------- Webflow Style panel → app (Webflow → App) ---------------- */
+  useEffect(() => {
+    if (!apiReady || !webflow) return;
+
+    let cancelled = false;
+
+    const pollStyles = async () => {
+      if (cancelled) return;
+
+      try {
+        const selectedElement = await webflow.getSelectedElement();
+
+        if (selectedElement?.styles && typeof selectedElement.getStyles === "function") {
+          const stylesArr = await selectedElement.getStyles();
+
+          const styleDetails = stylesArr.map(async (style) => {
+            const styleName = (await style.getName?.()) ?? "";
+            const styleProperties = (await style.getProperties?.()) ?? {};
+            return {
+              Name: styleName,
+              Properties: styleProperties,
+              ID: (style as any).id,
+            };
+          });
+
+          const resolved = await Promise.all(styleDetails);
+
+          const mergedProps: Record<string, string> = {};
+          for (const s of resolved) {
+            Object.assign(mergedProps, s.Properties);
+          }
+
+          const webflowColor =
+            mergedProps["color"] || mergedProps["background-color"] || "";
+
+          if (webflowColor && !cancelled) {
+            setStyles((prev) =>
+              webflowColor === prev.fillColor
+                ? prev
+                : { ...prev, fillColor: webflowColor }
+            );
+          }
+        }
+      } catch (e) {
+        // silent
+      }
+
+      if (!cancelled) {
+        setTimeout(pollStyles, 800);
+      }
+    };
+
+    pollStyles();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [apiReady]);
+
+  /* ---------------- App → Webflow (live color sync) ---------------- */
+  useEffect(() => {
+    if (!apiReady || !webflow) return;
+
+    const pushColor = async () => {
+      try {
+        const selectedElement = await webflow.getSelectedElement();
+        if (
+          !selectedElement ||
+          !selectedElement.styles ||
+          typeof selectedElement.getStyles !== "function"
+        ) {
+          return;
+        }
+        const stylesArr = await selectedElement.getStyles();
+        await Promise.all(
+          stylesArr.map((style) => style.setProperties({ color: styles.fillColor }))
+        );
+      } catch {
+        // silent
+      }
+    };
+
+    void pushColor();
+  }, [styles.fillColor, apiReady]);
+
+  /* ---------------- Handle Apply SVG (Webflow injection) ---------------- */
   const handleApplySVG = useCallback(async () => {
     if (!current) {
       WARN("No SVG selected");
@@ -412,6 +505,8 @@ const App: React.FC = () => {
 
     try {
       const selectedElement = await webflow!.getSelectedElement();
+      LOG("Selected element for apply:", safeMeta(selectedElement));
+
       if (!selectedElement) {
         WARN("Select an element first in Webflow");
         webflow?.notify?.({
@@ -430,14 +525,12 @@ const App: React.FC = () => {
         return;
       }
 
-      // 1) Create new DOM under selected element
       const svgDom = await selectedElement.append(webflow!.elementPresets.DOM);
       if (typeof svgDom.setTag === "function") {
         await svgDom.setTag("svg");
       }
       svgDom.tag = "svg";
 
-      // 2) Parse current SVG code
       const cleaned = cleanSVGContent(current.svgContent);
       const parser = new DOMParser();
       const parsed = parser.parseFromString(cleaned, "image/svg+xml");
@@ -452,7 +545,6 @@ const App: React.FC = () => {
         return;
       }
 
-      // 3) Root <svg> attributes via setAttribute (viewBox, width, height, fill, etc.)
       if (typeof svgDom.setAttribute === "function") {
         const attrs = Array.from(svgEl.attributes);
         for (const a of attrs) {
@@ -460,34 +552,28 @@ const App: React.FC = () => {
         }
       }
 
-      // 4) Shapes ke attributes original SVG se nikalna + Webflow DOM me banana
       const shapeNodes = svgEl.querySelectorAll(
         "path,rect,circle,ellipse,line,polygon,polyline"
       );
 
-      const shapes: { index: number; tag: string; attrs: Record<string, string> }[] = [];
       const childPromises: Promise<unknown>[] = [];
 
-      let idx = 0;
       for (const node of Array.from(shapeNodes)) {
         const tagName = node.tagName.toLowerCase();
         const attrs = attrsFrom(node);
 
-        shapes.push({
-          index: idx,
-          tag: tagName,
-          attrs,
-        });
+        if (attrs.fill !== "none") {
+          attrs.fill = "currentColor";
+        }
+        if (attrs.stroke && attrs.stroke !== "none") {
+          attrs.stroke = "currentColor";
+        }
 
-        childPromises.push(appendDomWithTag(svgDom, tagName, attrs));
-        idx++;
+        const p = appendDomWithTag(svgDom, tagName, attrs);
+        childPromises.push(p);
       }
 
-      // ek hi baar wait karke sari shapes create ho jaayengi
       await Promise.all(childPromises);
-
-      // optional: yaha shapes UI me dikhane ke liye state rakh sakte ho
-      // abhi tumne shapes/coords UI nahi manga, isliye skip kar diya
 
       webflow?.notify?.({
         type: "Success",
@@ -517,7 +603,6 @@ const App: React.FC = () => {
       setUploaded((prev) => [item, ...prev]);
       setCurrent(item);
       setStyles({ ...DEFAULT_SVG_STYLE });
-      setPathTarget("all");
       LOG("Saved SVG:", { name: item.name, paths: count });
     },
     []
@@ -539,8 +624,8 @@ const App: React.FC = () => {
               typeof res === "string"
                 ? res
                 : res
-                ? new TextDecoder().decode(res as ArrayBuffer)
-                : "";
+                  ? new TextDecoder().decode(res as ArrayBuffer)
+                  : "";
             const cleaned = cleanSVGContent(raw);
             if (!isValidSVG(cleaned)) {
               setUploadError(`"${file.name}" is not a valid SVG`);
@@ -580,8 +665,8 @@ const App: React.FC = () => {
               typeof res === "string"
                 ? res
                 : res
-                ? new TextDecoder().decode(res as ArrayBuffer)
-                : "";
+                  ? new TextDecoder().decode(res as ArrayBuffer)
+                  : "";
             const cleaned = cleanSVGContent(raw);
             if (!isValidSVG(cleaned)) {
               setUploadError(`"${file.name}" is not a valid SVG`);
@@ -660,7 +745,6 @@ const App: React.FC = () => {
 
   const resetStyles = () => {
     setStyles({ ...DEFAULT_SVG_STYLE });
-    setPathTarget("all");
   };
 
   /* ---------------- Derived values for UI ---------------- */
@@ -683,11 +767,10 @@ const App: React.FC = () => {
           {(["file", "code"] as const).map((tab) => (
             <button
               key={tab}
-              className={`px-3 py-1 text-xs rounded-md transition-colors ${
-                uploadTab === tab
-                  ? "bg-white text-blue-700 font-semibold shadow-sm"
-                  : "text-gray-600"
-              }`}
+              className={`px-3 py-1 text-xs rounded-md transition-colors ${uploadTab === tab
+                ? "bg-white text-blue-700 font-semibold shadow-sm"
+                : "text-gray-600"
+                }`}
               onClick={() => setUploadTab(tab)}
             >
               {tab === "file" ? "Upload / Drop" : "Paste SVG Code"}
@@ -696,14 +779,13 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      {/* Body (single scrollbar yahan pe hi rahe) */}
+      {/* Body */}
       <div className="flex-1 overflow-auto p-4">
         {/* Upload or Code */}
         {uploadTab === "file" ? (
           <div
-            className={`flex flex-col items-center justify-center p-6 text-center border-2 border-dashed rounded-lg ${
-              isDragging ? "border-blue-400 bg-blue-50" : "border-gray-300"
-            }`}
+            className={`flex flex-col items-center justify-center p-6 text-center border-2 border-dashed rounded-lg ${isDragging ? "border-blue-400 bg-blue-50" : "border-gray-300"
+              }`}
             onDrop={handleDrop}
             onDragOver={(e) => {
               e.preventDefault();
@@ -758,7 +840,7 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Gallery (no inner scrollbar, outer panel scroll karega) */}
+        {/* Gallery */}
         {uploaded.length > 0 && (
           <div className="mt-4">
             <h4 className="font-semibold text-xs mb-2">
@@ -768,11 +850,10 @@ const App: React.FC = () => {
               {uploaded.map((it) => (
                 <button
                   key={it.id}
-                  className={`p-1 bg-white border rounded hover:shadow-md transition-all ${
-                    current?.id === it.id
-                      ? "border-blue-500 ring-2 ring-blue-200"
-                      : "border-gray-200"
-                  }`}
+                  className={`p-1 bg-white border rounded hover:shadow-md transition-all ${current?.id === it.id
+                    ? "border-blue-500 ring-2 ring-blue-200"
+                    : "border-gray-200"
+                    }`}
                   onClick={() => setCurrent(it)}
                   title={it.name}
                 >
@@ -792,7 +873,7 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Style + Preview + Path targeting */}
+        {/* Style + Preview */}
         {current && (
           <div className="mt-6">
             <div className="flex items-center justify-between mb-2">
@@ -810,28 +891,8 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            {/* Path selector + controls */}
+            {/* Controls */}
             <div className="mt-3 grid grid-cols-3 gap-3">
-              <div className="space-y-1">
-                <label className="text-xs font-medium">Target path</label>
-                <select
-                  className="w-full text-xs border rounded px-2 py-1"
-                  value={pathTarget === "all" ? "all" : String(pathTarget)}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    if (v === "all") setPathTarget("all");
-                    else setPathTarget(parseInt(v, 10) || 0);
-                  }}
-                >
-                  <option value="all">All paths ({current.pathCount || "?"})</option>
-                  {Array.from({ length: current.pathCount || 0 }).map((_, i) => (
-                    <option key={i} value={i}>
-                      Path #{i + 1}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
               {/* Fill */}
               <div className="space-y-1">
                 <label className="text-xs font-medium">Fill</label>
