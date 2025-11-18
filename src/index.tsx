@@ -55,11 +55,7 @@ declare const webflow:
     }
   | undefined;
 
-/* ---------------- Utils & Logging ---------------- */
-const LOG = (...a: any[]) => console.log("[SVG-EXT]", ...a);
-const WARN = (...a: any[]) => console.warn("[SVG-EXT]", ...a);
-const ERR = (...a: any[]) => console.error("[SVG-EXT]", ...a);
-
+/* ---------------- Utils ---------------- */
 const isFile = (x: unknown): x is File =>
   !!x && typeof (x as File).name === "string" && typeof (x as File).type === "string";
 
@@ -67,17 +63,6 @@ const hasProp = (
   el: any,
   prop: "children" | "customAttributes" | "styles" | "textContent"
 ) => !!(el && el[prop]);
-
-const safeMeta = (el: any) =>
-  !el
-    ? el
-    : {
-        id: el?.id,
-        type: el?.type,
-        tag: el?.tag,
-        children: !!el?.children,
-        customAttributes: !!el?.customAttributes,
-      };
 
 /* ---------------- SVG helpers ---------------- */
 const isValidSVG = (content: string): boolean => {
@@ -154,8 +139,9 @@ const App: React.FC = () => {
   useEffect(() => {
     let alive = true;
     const tick = () => {
+      if (!alive) return;
       checkApiReady();
-      if (alive) setTimeout(tick, 1200);
+      setTimeout(tick, 1200);
     };
     tick();
     return () => {
@@ -170,23 +156,13 @@ const App: React.FC = () => {
       if (!cleaned) return;
 
       if (!checkApiReady()) {
-        webflow?.notify?.({
-          type: "Warning",
-          message: "Webflow API not ready. Open in Designer & select an element.",
-        });
         return;
       }
 
       try {
         const selectedElement = await webflow!.getSelectedElement();
-        LOG("Selected element for apply:", safeMeta(selectedElement));
 
         if (!selectedElement) {
-          WARN("Select an element first in Webflow");
-          webflow?.notify?.({
-            type: "Warning",
-            message: "Please select a Webflow element first.",
-          });
           return;
         }
 
@@ -194,11 +170,6 @@ const App: React.FC = () => {
           !hasProp(selectedElement, "children") ||
           typeof selectedElement.append !== "function"
         ) {
-          WARN("Selected element cannot host children");
-          webflow?.notify?.({
-            type: "Error",
-            message: "Selected element cannot contain SVG.",
-          });
           return;
         }
 
@@ -207,11 +178,6 @@ const App: React.FC = () => {
         const svgEl = parsed.querySelector("svg");
 
         if (!svgEl) {
-          WARN("No <svg> root in uploaded content");
-          webflow?.notify?.({
-            type: "Error",
-            message: "Invalid SVG: missing <svg> root.",
-          });
           return;
         }
 
@@ -237,11 +203,14 @@ const App: React.FC = () => {
 
         const childPromises: Promise<unknown>[] = [];
 
+        // SERIES-WISE AUTO CLASS: svg-path-1, svg-path-2, ...
+        let autoIndex = 1;
+
         for (const node of Array.from(shapeNodes)) {
           const tagName = node.tagName.toLowerCase();
           const attrs = attrsFrom(node);
 
-          // Make fills/strokes driven by Webflow styles via currentColor
+          // style controls: color via currentColor
           if (attrs.fill !== "none") {
             attrs.fill = "currentColor";
           }
@@ -249,25 +218,25 @@ const App: React.FC = () => {
             attrs.stroke = "currentColor";
           }
 
-          const p = appendDomWithTag(svgDom, tagName, attrs);
-          childPromises.push(p);
+          // existing class + new series class
+          const existingClass = attrs.class || attrs.className;
+          const seriesClass = `svg-path-${autoIndex}`;
+          autoIndex += 1;
+
+          const mergedClass = existingClass
+            ? `${existingClass} ${seriesClass}`
+            : seriesClass;
+
+          attrs.class = mergedClass;
+
+          childPromises.push(appendDomWithTag(svgDom, tagName, attrs));
         }
 
         await Promise.all(childPromises);
 
-        webflow?.notify?.({
-          type: "Success",
-          message:
-            label && label.trim().length > 0
-              ? `"${label}" SVG applied to selected element.`
-              : "SVG applied to selected element.",
-        });
-      } catch (e) {
-        ERR("handleApplySVG failed:", e);
-        webflow?.notify?.({
-          type: "Error",
-          message: "Failed to apply SVG.",
-        });
+        void label; // keep TS happy, flow unchanged
+      } catch {
+        // silent
       }
     },
     [checkApiReady]
@@ -287,7 +256,7 @@ const App: React.FC = () => {
       if (file.type === "image/svg+xml" || file.name.toLowerCase().endsWith(".svg")) {
         const reader = new FileReader();
 
-        reader.onload = (ev) => {
+        reader.onload = async (ev) => {
           try {
             const res = ev.target?.result as string | ArrayBuffer | null;
             const raw =
@@ -303,11 +272,9 @@ const App: React.FC = () => {
               return;
             }
 
-            // Directly apply into Webflow, no session gallery
-            void handleApplySVG(cleaned, file.name.replace(/\.svg$/i, ""));
-          } catch (err) {
+            await handleApplySVG(cleaned, file.name.replace(/\.svg$/i, ""));
+          } catch {
             setUploadError(`Error reading "${file.name}".`);
-            ERR("reader err:", err);
           }
         };
 
@@ -324,7 +291,7 @@ const App: React.FC = () => {
 
   /* ---------------- Drag & Drop ---------------- */
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
+    if (e.cancelable) e.preventDefault();
     setIsDragging(false);
     setUploadError("");
 
@@ -338,7 +305,7 @@ const App: React.FC = () => {
       if (file.type === "image/svg+xml" || file.name.toLowerCase().endsWith(".svg")) {
         const reader = new FileReader();
 
-        reader.onload = (ev) => {
+        reader.onload = async (ev) => {
           try {
             const res = ev.target?.result as string | ArrayBuffer | null;
             const raw =
@@ -354,11 +321,9 @@ const App: React.FC = () => {
               return;
             }
 
-            // Directly apply into Webflow, no session gallery
-            void handleApplySVG(cleaned, file.name.replace(/\.svg$/i, ""));
-          } catch (err) {
+            await handleApplySVG(cleaned, file.name.replace(/\.svg$/i, ""));
+          } catch {
             setUploadError(`Error reading "${file.name}".`);
-            ERR("drop read err:", err);
           }
         };
 
@@ -374,7 +339,7 @@ const App: React.FC = () => {
   };
 
   /* ---------------- Paste SVG Code ---------------- */
-  const handleSvgCodeUpload = () => {
+  const handleSvgCodeUpload = async () => {
     if (!svgCode.trim()) {
       setUploadError("Please enter SVG code.");
       return;
@@ -388,8 +353,7 @@ const App: React.FC = () => {
         return;
       }
 
-      // Directly apply into Webflow, no session gallery
-      void handleApplySVG(cleaned, "Custom SVG");
+      await handleApplySVG(cleaned, "Custom SVG");
       setSvgCode("");
     } catch {
       setUploadError("Invalid SVG code.");
@@ -407,10 +371,7 @@ const App: React.FC = () => {
     setUploadError("");
     setIsFetchingUrl(true);
     try {
-      const res = await fetch(url, {
-        method: "GET",
-        // headers could be added if needed, but Webflow CDN usually doesn't require them
-      });
+      const res = await fetch(url, { method: "GET" });
 
       if (!res.ok) {
         setUploadError(`Failed to fetch SVG. Status: ${res.status}`);
@@ -427,17 +388,11 @@ const App: React.FC = () => {
         return;
       }
 
-      // Label from URL filename (last part)
       const label =
         url.split("/").pop()?.replace(/\?.*$/, "").replace(/\.svg$/i, "") || "SVG from URL";
 
-      // Use the same pipeline: DOMParser → Webflow DOM → currentColor styling
-      void handleApplySVG(cleaned, label);
-
-      // Optional clear URL after success
-      // setSvgUrl("");
-    } catch (err) {
-      ERR("URL fetch SVG error:", err);
+      await handleApplySVG(cleaned, label);
+    } catch {
       setUploadError("Error fetching SVG from URL.");
     } finally {
       setIsFetchingUrl(false);
@@ -446,94 +401,84 @@ const App: React.FC = () => {
 
   /* ---------------- UI ---------------- */
   return (
-    <div className="w-full h-full bg-black text-white flex flex-col">
-      <div className="flex-1 p-4">
-        <div className="flex flex-col gap-6">
-          {/* Upload / Drop Section */}
-          <section
-            className={`flex flex-col items-center justify-center p-6 text-center border-2 border-dashed rounded-lg ${
-              isDragging ? "border-blue-400 bg-gray-900" : "border-gray-700 bg-gray-950"
-            }`}
-            onDrop={handleDrop}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setIsDragging(true);
-            }}
-            onDragLeave={(e) => {
-              e.preventDefault();
-              setIsDragging(false);
-            }}
-          >
-            <div className="text-4xl mb-2">📁</div>
-            <h3 className="font-semibold text-sm mb-1">Drop SVG files here</h3>
-            <p className="text-xs text-gray-400 mb-3">or</p>
-            <label className="bg-blue-600 text-white px-4 py-2 rounded text-xs cursor-pointer hover:bg-blue-700 transition-colors">
-              Browse Files
-              <input
-                type="file"
-                multiple
-                accept=".svg"
-                onChange={handleFileUpload}
-                className="hidden"
-              />
-            </label>
-            <p className="text-xs text-gray-400 mt-3">Supports .svg files only.</p>
-          </section>
+    <div className="w-full h-full bg-black text-white flex flex-col overflow-hidden">
+      <div className="flex-1 min-h-0 p-3 flex flex-col gap-4 justify-center">
+        {/* Upload / Drop Section */}
+        <section
+          className={`flex flex-col items-center justify-center p-4 text-center border border-dashed rounded-lg transition-colors ${
+            isDragging ? "border-blue-400 bg-gray-900" : "border-gray-700 bg-gray-950"
+          }`}
+          onDrop={handleDrop}
+          onDragOver={(e) => {
+            if (e.cancelable) e.preventDefault();
+            setIsDragging(true);
+          }}
+          onDragLeave={(e) => {
+            if (e.cancelable) e.preventDefault();
+            setIsDragging(false);
+          }}
+        >
+          <div className="text-3xl mb-1">📁</div>
+          <h3 className="font-semibold text-xs mb-1">Drop SVG files here</h3>
+          <p className="text-[11px] text-gray-400 mb-2">or</p>
+          <label className="bg-blue-600 text-white px-3 py-1.5 rounded text-[11px] cursor-pointer hover:bg-blue-700 transition-colors">
+            Browse Files
+            <input
+              type="file"
+              multiple
+              accept=".svg"
+              onChange={handleFileUpload}
+              className="hidden"
+            />
+          </label>
+          <p className="text-[11px] text-gray-400 mt-2">Supports .svg files only.</p>
+        </section>
 
-          {/* SVG URL Section (Webflow Assets CDN) */}
-          <section className="flex flex-col bg-gray-950 border border-gray-800 rounded-lg p-4 gap-2">
-            <h3 className="font-semibold text-sm">SVG URL (Webflow Asset)</h3>
-            <p className="text-[11px] text-gray-400 mb-1">
-              Assets panel se SVG ka URL copy karke yaha paste karo, e.g.:
-              <br />
-              <span className="font-mono text-[10px] break-all text-gray-500">
-                https://cdn.prod.website-files.com/.../right-arrow.svg
-              </span>
-            </p>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={svgUrl}
-                onChange={(e) => setSvgUrl(e.target.value)}
-                placeholder="https://cdn.prod.website-files.com/.../icon.svg"
-                className="flex-1 px-2 py-2 text-xs rounded border border-gray-700 bg-black text-gray-100 font-mono"
-              />
-              <button
-                onClick={handleSvgUrlApply}
-                disabled={!svgUrl.trim() || isFetchingUrl}
-                className="px-3 py-2 text-xs rounded bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed"
-              >
-                {isFetchingUrl ? "Fetching..." : "Apply URL"}
-              </button>
-            </div>
-          </section>
-
-          {/* Paste SVG Code Section */}
-          <section className="flex flex-col bg-gray-950 border border-gray-800 rounded-lg p-4">
-            <h3 className="font-semibold text-sm mb-2">Paste SVG Code</h3>
-            <textarea
-              value={svgCode}
-              onChange={(e) => setSvgCode(e.target.value)}
-              placeholder="<svg>...</svg>"
-              className="w-full h-28 p-3 text-xs border border-gray-700 rounded-lg resize-none font-mono bg-black text-gray-100"
+        {/* SVG URL Section (Webflow Assets CDN) */}
+        <section className="flex flex-col bg-gray-950 border border-gray-800 rounded-lg p-3 gap-2">
+          <h3 className="font-semibold text-xs">SVG URL (Webflow Asset)</h3>
+          <p className="text-[11px] text-gray-400">Paste svg url from assets pannel.</p>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={svgUrl}
+              onChange={(e) => setSvgUrl(e.target.value)}
+              placeholder="https://cdn.prod.website-files.com/.../icon.svg"
+              className="flex-1 px-2 py-1.5 text-[11px] rounded border border-gray-700 bg-black text-gray-100 font-mono"
             />
             <button
-              onClick={handleSvgCodeUpload}
-              disabled={!svgCode.trim()}
-              className="mt-3 bg-blue-600 text-white py-2 rounded text-xs hover:bg-blue-700 transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed"
+              onClick={handleSvgUrlApply}
+              disabled={!svgUrl.trim() || isFetchingUrl}
+              className="px-3 py-1.5 text-[11px] rounded bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
             >
-              Apply to Selected Element
+              {isFetchingUrl ? "Fetching..." : "Apply URL"}
             </button>
-          </section>
+          </div>
+        </section>
 
-          {uploadError && (
-            <div className="p-2 bg-red-900/40 border border-red-500 text-red-200 text-xs rounded">
-              {uploadError}
-            </div>
-          )}
+        {/* Paste SVG Code Section */}
+        <section className="flex flex-col bg-gray-950 border border-gray-800 rounded-lg p-3">
+          <h3 className="font-semibold text-xs mb-1">Paste SVG Code</h3>
+          <textarea
+            value={svgCode}
+            onChange={(e) => setSvgCode(e.target.value)}
+            placeholder="<svg>...</svg>"
+            className="w-full h-24 p-2 text-[11px] border border-gray-700 rounded-lg resize-none font-mono bg-black text-gray-100"
+          />
+          <button
+            onClick={handleSvgCodeUpload}
+            disabled={!svgCode.trim()}
+            className="mt-2 bg-blue-600 text-white py-1.5 rounded text-[11px] hover:bg-blue-700 transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed"
+          >
+            Apply to Selected Element
+          </button>
+        </section>
 
-         
-        </div>
+        {uploadError && (
+          <div className="p-2 bg-red-900/40 border border-red-500 text-red-200 text-[11px] rounded">
+            {uploadError}
+          </div>
+        )}
       </div>
     </div>
   );
