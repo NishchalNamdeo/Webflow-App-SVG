@@ -134,9 +134,11 @@ function attrsFrom(el: Element): Record<string, string> {
 /* ---------------- React Component ---------------- */
 const App: React.FC = () => {
   const [svgCode, setSvgCode] = useState("");
+  const [svgUrl, setSvgUrl] = useState("");
   const [uploadError, setUploadError] = useState("");
   const [isDragging, setIsDragging] = useState(false);
   const [apiReady, setApiReady] = useState(false);
+  const [isFetchingUrl, setIsFetchingUrl] = useState(false);
 
   const checkApiReady = useCallback(() => {
     const ok =
@@ -394,6 +396,54 @@ const App: React.FC = () => {
     }
   };
 
+  /* ---------------- Paste SVG URL (Asset CDN) ---------------- */
+  const handleSvgUrlApply = async () => {
+    const url = svgUrl.trim();
+    if (!url) {
+      setUploadError("Please enter SVG URL.");
+      return;
+    }
+
+    setUploadError("");
+    setIsFetchingUrl(true);
+    try {
+      const res = await fetch(url, {
+        method: "GET",
+        // headers could be added if needed, but Webflow CDN usually doesn't require them
+      });
+
+      if (!res.ok) {
+        setUploadError(`Failed to fetch SVG. Status: ${res.status}`);
+        setIsFetchingUrl(false);
+        return;
+      }
+
+      const raw = await res.text();
+      const cleaned = cleanSVGContent(raw);
+
+      if (!isValidSVG(cleaned)) {
+        setUploadError("Fetched file is not a valid SVG.");
+        setIsFetchingUrl(false);
+        return;
+      }
+
+      // Label from URL filename (last part)
+      const label =
+        url.split("/").pop()?.replace(/\?.*$/, "").replace(/\.svg$/i, "") || "SVG from URL";
+
+      // Use the same pipeline: DOMParser → Webflow DOM → currentColor styling
+      void handleApplySVG(cleaned, label);
+
+      // Optional clear URL after success
+      // setSvgUrl("");
+    } catch (err) {
+      ERR("URL fetch SVG error:", err);
+      setUploadError("Error fetching SVG from URL.");
+    } finally {
+      setIsFetchingUrl(false);
+    }
+  };
+
   /* ---------------- UI ---------------- */
   return (
     <div className="w-full h-full bg-black text-white flex flex-col">
@@ -430,6 +480,34 @@ const App: React.FC = () => {
             <p className="text-xs text-gray-400 mt-3">Supports .svg files only.</p>
           </section>
 
+          {/* SVG URL Section (Webflow Assets CDN) */}
+          <section className="flex flex-col bg-gray-950 border border-gray-800 rounded-lg p-4 gap-2">
+            <h3 className="font-semibold text-sm">SVG URL (Webflow Asset)</h3>
+            <p className="text-[11px] text-gray-400 mb-1">
+              Assets panel se SVG ka URL copy karke yaha paste karo, e.g.:
+              <br />
+              <span className="font-mono text-[10px] break-all text-gray-500">
+                https://cdn.prod.website-files.com/.../right-arrow.svg
+              </span>
+            </p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={svgUrl}
+                onChange={(e) => setSvgUrl(e.target.value)}
+                placeholder="https://cdn.prod.website-files.com/.../icon.svg"
+                className="flex-1 px-2 py-2 text-xs rounded border border-gray-700 bg-black text-gray-100 font-mono"
+              />
+              <button
+                onClick={handleSvgUrlApply}
+                disabled={!svgUrl.trim() || isFetchingUrl}
+                className="px-3 py-2 text-xs rounded bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed"
+              >
+                {isFetchingUrl ? "Fetching..." : "Apply URL"}
+              </button>
+            </div>
+          </section>
+
           {/* Paste SVG Code Section */}
           <section className="flex flex-col bg-gray-950 border border-gray-800 rounded-lg p-4">
             <h3 className="font-semibold text-sm mb-2">Paste SVG Code</h3>
@@ -444,7 +522,7 @@ const App: React.FC = () => {
               disabled={!svgCode.trim()}
               className="mt-3 bg-blue-600 text-white py-2 rounded text-xs hover:bg-blue-700 transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed"
             >
-              Apply to  Selected Element
+              Apply to Selected Element
             </button>
           </section>
 
@@ -454,7 +532,7 @@ const App: React.FC = () => {
             </div>
           )}
 
-        
+         
         </div>
       </div>
     </div>
