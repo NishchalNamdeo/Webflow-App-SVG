@@ -17,7 +17,7 @@ interface WFElement {
   type?: any; // "DOM", "Image", "String", etc.
   tag?: string;
 
-  // Capability flags (boolean properties per docs)
+  // Capability flags
   children?: boolean;
   styles?: boolean;
   textContent?: boolean;
@@ -27,7 +27,7 @@ interface WFElement {
   getTag?: () => Promise<string | null>;
   setTag?: (tag: string) => Promise<null>;
   setAttribute?: (name: string, value: string) => Promise<null>;
-  removeAttribute?: (name: string) => Promise<null>;
+  removeAttribute?: () => Promise<null>;
   getAttribute?: (name: string) => Promise<string | null>;
   getAllAttributes?: () => Promise<NamedValue[]>;
   setHtml?: (html: string) => Promise<void>;
@@ -35,7 +35,7 @@ interface WFElement {
   // Children methods (only if children === true)
   append?: (presetOrElement: any) => Promise<WFElement>;
 
-  // Styles (only if styles === true)
+  // Styles (runtime pe hota hai, typings me add kar rahe)
   setStyles?: (styles: WFStyle[]) => Promise<void>;
   getStyles?: () => Promise<WFStyle[] | undefined>;
 }
@@ -124,7 +124,6 @@ const App: React.FC = () => {
   const [isDragging, setIsDragging] = useState(false);
   const [apiReady, setApiReady] = useState(false);
   const [isFetchingUrl, setIsFetchingUrl] = useState(false);
-  const [lastAppliedColor, setLastAppliedColor] = useState<string | null>(null);
 
   const checkApiReady = useCallback(() => {
     const ok =
@@ -188,7 +187,7 @@ const App: React.FC = () => {
         }
         svgDom.tag = "svg";
 
-        // Mark root for color-sync
+        // Mark root (future reference ke liye)
         if (typeof svgDom.setAttribute === "function") {
           await svgDom.setAttribute("data-svg-ext-root", "1");
         }
@@ -202,16 +201,11 @@ const App: React.FC = () => {
         }
 
         // For each shape: create Webflow DOM node
-        //  - Keep ORIGINAL colors
-        //  - Store orig colors in data- attrs
-        //  - Add auto classes svg-path-1, svg-path-2...
-        //  - If shape has no explicit fill/stroke, use currentColor fallback
         const shapeNodes = svgEl.querySelectorAll(
           "path,rect,circle,ellipse,line,polygon,polyline"
         );
 
         const childPromises: Promise<unknown>[] = [];
-        let autoIndex = 1;
 
         for (const node of Array.from(shapeNodes)) {
           const tagName = node.tagName.toLowerCase();
@@ -222,28 +216,31 @@ const App: React.FC = () => {
             "data-svg-ext-shape": "1",
           };
 
-          // Store original colors for later reference
-          if (attrs.fill) {
+          // ✅ store original colors
+          if (attrs.fill != null) {
             extendedAttrs["data-svg-ext-orig-fill"] = attrs.fill;
           }
-          if (attrs.stroke) {
+          if (attrs.stroke != null) {
             extendedAttrs["data-svg-ext-orig-stroke"] = attrs.stroke;
           }
 
-          // Auto series class
-          const existingClass = extendedAttrs.class || extendedAttrs.className;
-          const seriesClass = `svg-path-${autoIndex}`;
-          autoIndex += 1;
-
-          const mergedClass = existingClass
-            ? `${existingClass} ${seriesClass}`
-            : seriesClass;
-          extendedAttrs.class = mergedClass;
-
-          // Fallback: no fill / stroke? control via currentColor
-          if (!attrs.fill && !attrs.stroke) {
+          // ✅ multi-color: original colors se render karo
+          if (attrs.fill && attrs.fill !== "none") {
+            extendedAttrs.fill = attrs.fill;
+          } else {
+            // agar fill hi nahi tha, to currentColor se drive kar sakte
             extendedAttrs.fill = "currentColor";
           }
+
+          if (attrs.stroke && attrs.stroke !== "none") {
+            extendedAttrs.stroke = attrs.stroke;
+          }
+
+          extendedAttrs["data-svg-ext-currentcolor-enabled"] = "1";
+
+          // koi extra class nahi
+          delete extendedAttrs.class;
+          delete extendedAttrs.className;
 
           childPromises.push(appendDomWithTag(svgDom, tagName, extendedAttrs));
         }
@@ -258,7 +255,7 @@ const App: React.FC = () => {
     [checkApiReady]
   );
 
-  /* ---------------- Webflow color → SVG color sync (group by original color) ---------------- */
+  /* ---------------- Webflow class color/fill → SVG sync + show fill in panel ---------------- */
   useEffect(() => {
     if (!apiReady || typeof webflow === "undefined") return;
 
@@ -269,11 +266,17 @@ const App: React.FC = () => {
 
       try {
         const selected = await webflow.getSelectedElement();
-        if (!selected || !selected.styles || typeof selected.getStyles !== "function") {
+        if (!selected || !hasProp(selected, "styles")) {
           return;
         }
 
-        const stylesArr = await selected.getStyles();
+        if (typeof selected.getStyles !== "function") {
+          return;
+        }
+
+        const stylesArr = (await selected.getStyles()) || [];
+        if (!stylesArr.length) return;
+
         const mergedProps: Record<string, string> = {};
 
         for (const style of stylesArr) {
@@ -281,18 +284,35 @@ const App: React.FC = () => {
           Object.assign(mergedProps, props);
         }
 
-        // Webflow style panel se jo color aa rahi hai
-        const webflowColor =
-          mergedProps["color"] ||
-          mergedProps["fill"] ||
-          mergedProps["background-color"] ||
-          "";
+        // ✅ priority:
+        // 1) fill from class
+        // 2) background-color
+        // 3) color
+        const fillFromClass =
+          mergedProps["fill"] || mergedProps["background-color"] || "";
+        const colorFromClass = mergedProps["color"] || "";
 
-        if (!webflowColor || webflowColor === lastAppliedColor) {
+        const webflowColor = fillFromClass || colorFromClass;
+
+        if (!webflowColor) {
           return;
         }
 
-        // Try to locate the actual DOM node for the selected element (if it has an id)
+        // ✅ SHAPE ELEMENT / CLASS SIDE:
+        // agar class me sirf color tha, fill nahi tha → ab fill bhi set karo
+        if (!mergedProps["fill"] && colorFromClass) {
+          await Promise.all(
+            stylesArr.map((style) =>
+              style.setProperties
+                ? style.setProperties({
+                    fill: webflowColor,
+                  })
+                : Promise.resolve()
+            )
+          );
+        }
+
+        // ✅ DOM SIDE: closest svg root me shapes update karo
         const allAttrs = (await selected.getAllAttributes?.()) || [];
         const idAttr = allAttrs.find((a) => a.name === "id");
 
@@ -301,72 +321,22 @@ const App: React.FC = () => {
           selectedDom = document.getElementById(idAttr.value);
         }
 
-        let svgRoots: SVGSVGElement[] = [];
-        let shapesToUpdate: SVGElement[] = [];
+        if (!selectedDom) return;
 
-        if (selectedDom) {
-          // If selected is a shape inside SVG
-          const selectedIsShape = selectedDom.hasAttribute("data-svg-ext-shape");
+        const closestRoot = selectedDom.closest<SVGSVGElement>(
+          "[data-svg-ext-root='1']"
+        );
+        if (!closestRoot) return;
 
-          const closestRoot = selectedDom.closest<SVGSVGElement>(
-            "[data-svg-ext-root='1']"
-          );
+        const shapes = Array.from(
+          closestRoot.querySelectorAll<SVGElement>("[data-svg-ext-shape='1']")
+        );
 
-          if (selectedIsShape && closestRoot) {
-            // 🎯 CASE 1: user selected a specific shape (path/rect/etc.)
-            // -> Update all shapes that share the same ORIGINAL color
-            const targetOrigFill = selectedDom.getAttribute("data-svg-ext-orig-fill");
-            const targetOrigStroke =
-              selectedDom.getAttribute("data-svg-ext-orig-stroke");
-
-            const allShapes = Array.from(
-              closestRoot.querySelectorAll<SVGElement>("[data-svg-ext-shape='1']")
-            );
-
-            shapesToUpdate = allShapes.filter((shape) => {
-              const of = shape.getAttribute("data-svg-ext-orig-fill");
-              const os = shape.getAttribute("data-svg-ext-orig-stroke");
-
-              // same original fill OR same original stroke OR it's the exact element
-              return (
-                shape === selectedDom ||
-                (targetOrigFill && of === targetOrigFill) ||
-                (targetOrigStroke && os === targetOrigStroke)
-              );
-            });
-          } else {
-            // 🎯 CASE 2: user selected wrapper / parent inside SVG tree
-            // -> Behave like "global recolor" for that SVG root
-            if (closestRoot) {
-              svgRoots = [closestRoot];
-            } else {
-              svgRoots = Array.from(
-                selectedDom.querySelectorAll<SVGSVGElement>("[data-svg-ext-root='1']")
-              );
-            }
-          }
-        } else {
-          // Fallback: document level
-          svgRoots = Array.from(
-            document.querySelectorAll<SVGSVGElement>("[data-svg-ext-root='1']")
-          );
-        }
-
-        // If we didn't already compute shapesToUpdate based on a selected shape,
-        // fall back to "all shapes under roots" behavior
-        if (shapesToUpdate.length === 0 && svgRoots.length > 0) {
-          svgRoots.forEach((svg) => {
-            const shapes = svg.querySelectorAll<SVGElement>("[data-svg-ext-shape='1']");
-            shapes.forEach((shape) => shapesToUpdate.push(shape));
-          });
-        }
-
-        // Apply color to target shapes
-        shapesToUpdate.forEach((shape) => {
+        shapes.forEach((shape) => {
           const origFill = shape.getAttribute("data-svg-ext-orig-fill");
           const origStroke = shape.getAttribute("data-svg-ext-orig-stroke");
 
-          // Only override shapes that originally had some color (not "none")
+          // original painted shapes → color override
           if (origFill && origFill !== "none") {
             shape.setAttribute("fill", webflowColor);
           }
@@ -374,10 +344,6 @@ const App: React.FC = () => {
             shape.setAttribute("stroke", webflowColor);
           }
         });
-
-        if (shapesToUpdate.length > 0) {
-          setLastAppliedColor(webflowColor);
-        }
       } catch {
         // silent
       } finally {
@@ -392,7 +358,7 @@ const App: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [apiReady, lastAppliedColor]);
+  }, [apiReady]);
 
   /* ---------------- Upload from file ---------------- */
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -556,7 +522,7 @@ const App: React.FC = () => {
   return (
     <div className="w-full h-full bg-black text-white flex flex-col overflow-hidden">
       <div className="flex-1 min-h-0 p-3 flex flex-col gap-4 justify-center">
-        {/* API status (optional small indicator) */}
+        {/* API status */}
         <div className="flex items-center justify-end mb-1">
           <span
             className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] ${
@@ -605,7 +571,7 @@ const App: React.FC = () => {
           <p className="text-[11px] text-gray-400 mt-2">Supports .svg files only.</p>
         </section>
 
-        {/* SVG URL Section (Webflow Assets CDN) */}
+        {/* SVG URL Section */}
         <section className="flex flex-col bg-gray-950 border border-gray-800 rounded-lg p-3 gap-2">
           <h3 className="font-semibold text-xs">SVG URL (Webflow Asset)</h3>
           <p className="text-[11px] text-gray-400">Paste svg url from assets panel.</p>
