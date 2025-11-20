@@ -1,9 +1,9 @@
 {
-  "name": ".",
+  "name": "SVGify",
   "publicDir": "public",
   "size": "comfortable",
   "apiVersion": "2",
   "extension": {
-    "url": "http://localhost:1337"
+    "url": "https://691eb5d998846256037f73e6.webflow-ext.com"
   }
 }

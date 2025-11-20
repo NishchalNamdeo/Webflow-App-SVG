@@ -5,7 +5,6 @@ import ReactDOM from "react-dom/client";
 interface WFStyle {
   setProperties: (props: Record<string, string>) => Promise<void>;
   getProperties?: () => Promise<Record<string, string>>;
-  getName?: () => Promise<string>;
 }
 
 type NamedValue = { name: string; value: string };
@@ -35,8 +34,7 @@ interface WFElement {
   // Children methods (only if children === true)
   append?: (presetOrElement: any) => Promise<WFElement>;
 
-  // Styles (runtime pe hota hai, typings me add kar rahe)
-  setStyles?: (styles: WFStyle[]) => Promise<void>;
+  // Styles
   getStyles?: () => Promise<WFStyle[] | undefined>;
 }
 
@@ -44,14 +42,10 @@ declare const webflow:
   | {
       getSelectedElement: () => Promise<WFElement | null>;
       elementPresets: { DOM: any };
-      addElement: (el: WFElement) => Promise<void>;
-      createStyle: (name: string) => Promise<WFStyle>;
-      getStyleByName?: (name: string) => Promise<WFStyle | null>;
       notify?: (opts: {
         type: "Success" | "Error" | "Warning";
         message: string;
       }) => Promise<void> | void;
-      getAllElements?: () => Promise<WFElement[]>;
     }
   | undefined;
 
@@ -124,6 +118,7 @@ const App: React.FC = () => {
   const [isDragging, setIsDragging] = useState(false);
   const [apiReady, setApiReady] = useState(false);
   const [isFetchingUrl, setIsFetchingUrl] = useState(false);
+  const [hasSelectedElement, setHasSelectedElement] = useState(false);
 
   const checkApiReady = useCallback(() => {
     const ok =
@@ -135,40 +130,67 @@ const App: React.FC = () => {
     return ok;
   }, []);
 
-  // Keep polling until Webflow Designer API is ready
+  // Poll Webflow Designer API until ready (then stop)
   useEffect(() => {
-    let alive = true;
-    const tick = () => {
-      if (!alive) return;
-      checkApiReady();
-      setTimeout(tick, 1200);
-    };
-    tick();
-    return () => {
-      alive = false;
-    };
+    let attempts = 0;
+    const interval = setInterval(() => {
+      const ok = checkApiReady();
+      attempts += 1;
+      if (ok || attempts > 60) {
+        // ~60s max
+        clearInterval(interval);
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
   }, [checkApiReady]);
 
-  /* ---------------- Apply SVG into Webflow (combined logic) ---------------- */
+  // Poll current selected element and update hasSelectedElement
+  useEffect(() => {
+    if (!apiReady || typeof webflow === "undefined") return;
+
+    let cancelled = false;
+
+    const interval = setInterval(async () => {
+      if (cancelled) return;
+      try {
+        const el = await webflow.getSelectedElement();
+        if (!cancelled) {
+          setHasSelectedElement(!!el);
+        }
+      } catch {
+        if (!cancelled) {
+          setHasSelectedElement(false);
+        }
+      }
+    }, 800);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [apiReady]);
+
+  /* ---------------- Apply SVG into Webflow ---------------- */
   const handleApplySVG = useCallback(
-    async (svgContent: string, label?: string) => {
+    async (svgContent: string) => {
       const cleaned = cleanSVGContent(svgContent);
       if (!cleaned) return;
 
       if (!checkApiReady()) {
+        setUploadError("Webflow Designer API is not ready yet.");
         return;
       }
 
       try {
-        const selectedElement = await webflow!.getSelectedElement();
-        if (!selectedElement) {
+        const selected = await webflow!.getSelectedElement();
+        if (!selected) {
+          setUploadError("Please select an element on the canvas first.");
           return;
         }
 
-        if (
-          !hasProp(selectedElement, "children") ||
-          typeof selectedElement.append !== "function"
-        ) {
+        if (!hasProp(selected, "children") || typeof selected.append !== "function") {
+          setUploadError("Selected element cannot contain SVG content.");
           return;
         }
 
@@ -177,17 +199,18 @@ const App: React.FC = () => {
         const svgEl = parsed.querySelector("svg");
 
         if (!svgEl) {
+          setUploadError("Provided SVG does not contain a valid <svg> root.");
           return;
         }
 
         // Create Webflow DOM "svg" element under selected element
-        const svgDom = await selectedElement.append(webflow!.elementPresets.DOM);
+        const svgDom = await selected.append(webflow!.elementPresets.DOM);
         if (typeof svgDom.setTag === "function") {
           await svgDom.setTag("svg");
         }
         svgDom.tag = "svg";
 
-        // Mark root (future reference ke liye)
+        // Mark root for later lookup
         if (typeof svgDom.setAttribute === "function") {
           await svgDom.setAttribute("data-svg-ext-root", "1");
         }
@@ -216,7 +239,7 @@ const App: React.FC = () => {
             "data-svg-ext-shape": "1",
           };
 
-          // ✅ store original colors
+          // store original colors
           if (attrs.fill != null) {
             extendedAttrs["data-svg-ext-orig-fill"] = attrs.fill;
           }
@@ -224,11 +247,10 @@ const App: React.FC = () => {
             extendedAttrs["data-svg-ext-orig-stroke"] = attrs.stroke;
           }
 
-          // ✅ multi-color: original colors se render karo
+          // multi-color: original colors se render karo
           if (attrs.fill && attrs.fill !== "none") {
             extendedAttrs.fill = attrs.fill;
           } else {
-            // agar fill hi nahi tha, to currentColor se drive kar sakte
             extendedAttrs.fill = "currentColor";
           }
 
@@ -238,7 +260,7 @@ const App: React.FC = () => {
 
           extendedAttrs["data-svg-ext-currentcolor-enabled"] = "1";
 
-          // koi extra class nahi
+          // extra class clean up
           delete extendedAttrs.class;
           delete extendedAttrs.className;
 
@@ -247,30 +269,27 @@ const App: React.FC = () => {
 
         await Promise.all(childPromises);
 
-        void label; // avoid TS unused warning
+        setUploadError("");
+        
       } catch {
-        // silent
+        setUploadError("Something went wrong while applying the SVG.");
       }
     },
     [checkApiReady]
   );
 
-  /* ---------------- Webflow class color/fill → SVG sync + show fill in panel ---------------- */
+  /* ---------------- Webflow class color/fill → SVG sync ---------------- */
   useEffect(() => {
     if (!apiReady || typeof webflow === "undefined") return;
 
     let cancelled = false;
 
-    const pollStylesAndSyncColor = async () => {
+    const interval = setInterval(async () => {
       if (cancelled) return;
 
       try {
         const selected = await webflow.getSelectedElement();
-        if (!selected || !hasProp(selected, "styles")) {
-          return;
-        }
-
-        if (typeof selected.getStyles !== "function") {
+        if (!selected || !hasProp(selected, "styles") || !selected.getStyles) {
           return;
         }
 
@@ -284,7 +303,7 @@ const App: React.FC = () => {
           Object.assign(mergedProps, props);
         }
 
-        // ✅ priority:
+        // priority:
         // 1) fill from class
         // 2) background-color
         // 3) color
@@ -298,8 +317,7 @@ const App: React.FC = () => {
           return;
         }
 
-        // ✅ SHAPE ELEMENT / CLASS SIDE:
-        // agar class me sirf color tha, fill nahi tha → ab fill bhi set karo
+        // ensure fill is set if only color was defined
         if (!mergedProps["fill"] && colorFromClass) {
           await Promise.all(
             stylesArr.map((style) =>
@@ -312,7 +330,7 @@ const App: React.FC = () => {
           );
         }
 
-        // ✅ DOM SIDE: closest svg root me shapes update karo
+        // DOM side: update shapes inside closest svg-ext root
         const allAttrs = (await selected.getAllAttributes?.()) || [];
         const idAttr = allAttrs.find((a) => a.name === "id");
 
@@ -336,7 +354,6 @@ const App: React.FC = () => {
           const origFill = shape.getAttribute("data-svg-ext-orig-fill");
           const origStroke = shape.getAttribute("data-svg-ext-orig-stroke");
 
-          // original painted shapes → color override
           if (origFill && origFill !== "none") {
             shape.setAttribute("fill", webflowColor);
           }
@@ -345,18 +362,13 @@ const App: React.FC = () => {
           }
         });
       } catch {
-        // silent
-      } finally {
-        if (!cancelled) {
-          setTimeout(pollStylesAndSyncColor, 800);
-        }
+        // swallow errors to avoid console spam; will retry next interval
       }
-    };
-
-    pollStylesAndSyncColor();
+    }, 1200); // a bit slower to reduce DOM churn
 
     return () => {
       cancelled = true;
+      clearInterval(interval);
     };
   }, [apiReady]);
 
@@ -371,7 +383,10 @@ const App: React.FC = () => {
       const file = isFile(maybe) ? maybe : null;
       if (!file) return;
 
-      if (file.type === "image/svg+xml" || file.name.toLowerCase().endsWith(".svg")) {
+      if (
+        file.type === "image/svg+xml" ||
+        file.name.toLowerCase().endsWith(".svg")
+      ) {
         const reader = new FileReader();
 
         reader.onload = async (ev) => {
@@ -390,7 +405,7 @@ const App: React.FC = () => {
               return;
             }
 
-            await handleApplySVG(cleaned, file.name.replace(/\.svg$/i, ""));
+            await handleApplySVG(cleaned);
           } catch {
             setUploadError(`Error reading "${file.name}".`);
           }
@@ -420,7 +435,10 @@ const App: React.FC = () => {
       const file = isFile(maybe) ? maybe : null;
       if (!file) return;
 
-      if (file.type === "image/svg+xml" || file.name.toLowerCase().endsWith(".svg")) {
+      if (
+        file.type === "image/svg+xml" ||
+        file.name.toLowerCase().endsWith(".svg")
+      ) {
         const reader = new FileReader();
 
         reader.onload = async (ev) => {
@@ -439,7 +457,7 @@ const App: React.FC = () => {
               return;
             }
 
-            await handleApplySVG(cleaned, file.name.replace(/\.svg$/i, ""));
+            await handleApplySVG(cleaned);
           } catch {
             setUploadError(`Error reading "${file.name}".`);
           }
@@ -471,7 +489,7 @@ const App: React.FC = () => {
         return;
       }
 
-      await handleApplySVG(cleaned, "Custom SVG");
+      await handleApplySVG(cleaned);
       setSvgCode("");
     } catch {
       setUploadError("Invalid SVG code.");
@@ -492,8 +510,7 @@ const App: React.FC = () => {
       const res = await fetch(url, { method: "GET" });
 
       if (!res.ok) {
-        setUploadError(`Failed to fetch SVG. Status: ${res.status}`);
-        setIsFetchingUrl(false);
+        setUploadError(`Failed to fetch SVG. Server responded with ${res.status}.`);
         return;
       }
 
@@ -502,15 +519,10 @@ const App: React.FC = () => {
 
       if (!isValidSVG(cleaned)) {
         setUploadError("Fetched file is not a valid SVG.");
-        setIsFetchingUrl(false);
         return;
       }
 
-      const label =
-        url.split("/").pop()?.replace(/\?.*$/, "").replace(/\.svg$/i, "") ||
-        "SVG from URL";
-
-      await handleApplySVG(cleaned, label);
+      await handleApplySVG(cleaned);
     } catch {
       setUploadError("Error fetching SVG from URL.");
     } finally {
@@ -518,28 +530,25 @@ const App: React.FC = () => {
     }
   };
 
-  /* ---------------- UI ---------------- */
+  /* ---------------- GATE: until element is selected ---------------- */
+  if (!hasSelectedElement) {
+    return (
+      <div className="w-full h-[460px] bg-black text-white flex flex-col p-16 overflow-hidden">
+        <div className="text-4xl p-5 text-center">👉</div>
+        <h3 className="font-semibold text-lg p-1 text-center">Select an element</h3>
+        <p className="text-[11px] text-gray-400 p-1 text-center">
+          No element is selected. Please select any element on the Webflow Designer
+          canvas. Once an element is selected, the app will automatically enable the
+          SVG actions.
+        </p>
+      </div>
+    );
+  }
+
+  /* ---------------- UI (visible only AFTER element selected) ---------------- */
   return (
     <div className="w-full h-full bg-black text-white flex flex-col overflow-hidden">
       <div className="flex-1 min-h-0 p-3 flex flex-col gap-4 justify-center">
-        {/* API status */}
-        <div className="flex items-center justify-end mb-1">
-          <span
-            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] ${
-              apiReady
-                ? "bg-emerald-900/40 text-emerald-200 border border-emerald-500/60"
-                : "bg-yellow-900/40 text-yellow-200 border border-yellow-500/60"
-            }`}
-          >
-            <span
-              className={`w-1.5 h-1.5 rounded-full ${
-                apiReady ? "bg-emerald-400" : "bg-yellow-400"
-              }`}
-            />
-            {apiReady ? "Webflow API ready" : "Waiting for Webflow API..."}
-          </span>
-        </div>
-
         {/* Upload / Drop Section */}
         <section
           className={`flex flex-col items-center justify-center p-4 text-center border border-dashed rounded-lg transition-colors ${
@@ -568,13 +577,17 @@ const App: React.FC = () => {
               className="hidden"
             />
           </label>
-          <p className="text-[11px] text-gray-400 mt-2">Supports .svg files only.</p>
+          <p className="text-[11px] text-gray-400 mt-2">
+            Supports .svg files only.
+          </p>
         </section>
 
         {/* SVG URL Section */}
         <section className="flex flex-col bg-gray-950 border border-gray-800 rounded-lg p-3 gap-2">
           <h3 className="font-semibold text-xs">SVG URL (Webflow Asset)</h3>
-          <p className="text-[11px] text-gray-400">Paste svg url from assets panel.</p>
+          <p className="text-[11px] text-gray-400">
+            Grab the SVG link from your Assets (→ Copy link) → paste here → Apply URL
+          </p>
           <div className="flex gap-2">
             <input
               type="text"

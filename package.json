@@ -1,5 +1,5 @@
 {
-  "name": ".",
+  "name": "SVGify",
   "version": "1.0.0",
   "scripts": {
     "dev": "npm install && concurrently \"webflow extension serve\" \"npm run watch-webpack\"",
@@ -36,5 +36,9 @@
       "@babel/preset-env",
       "@babel/preset-react"
     ]
+  },
+  "dependencies": {
+    "@tailwindcss/cli": "^4.1.17",
+    "tailwindcss": "^4.1.17"
   }
 }
