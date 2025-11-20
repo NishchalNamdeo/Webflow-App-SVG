@@ -247,7 +247,7 @@ const App: React.FC = () => {
             extendedAttrs["data-svg-ext-orig-stroke"] = attrs.stroke;
           }
 
-          // multi-color: original colors se render karo
+          // multi-color: original colors se render karo, but allow overrides
           if (attrs.fill && attrs.fill !== "none") {
             extendedAttrs.fill = attrs.fill;
           } else {
@@ -270,7 +270,6 @@ const App: React.FC = () => {
         await Promise.all(childPromises);
 
         setUploadError("");
-        
       } catch {
         setUploadError("Something went wrong while applying the SVG.");
       }
@@ -303,32 +302,31 @@ const App: React.FC = () => {
           Object.assign(mergedProps, props);
         }
 
-        // priority:
-        // 1) fill from class
-        // 2) background-color
-        // 3) color
-        const fillFromClass =
-          mergedProps["fill"] || mergedProps["background-color"] || "";
+        // priority for picking color:
+        // 1) color
+        // 2) fill
+        // 3) background-color
         const colorFromClass = mergedProps["color"] || "";
+        const fillFromClass = mergedProps["fill"] || "";
+        const bgFromClass = mergedProps["background-color"] || "";
 
-        const webflowColor = fillFromClass || colorFromClass;
+        const webflowColor =
+          colorFromClass || fillFromClass || bgFromClass || "";
 
         if (!webflowColor) {
           return;
         }
 
-        // ensure fill is set if only color was defined
-        if (!mergedProps["fill"] && colorFromClass) {
-          await Promise.all(
-            stylesArr.map((style) =>
-              style.setProperties
-                ? style.setProperties({
-                    fill: webflowColor,
-                  })
-                : Promise.resolve()
-            )
-          );
-        }
+        // Always sync style fill with the effective color
+        await Promise.all(
+          stylesArr.map((style) =>
+            style.setProperties
+              ? style.setProperties({
+                  fill: webflowColor,
+                })
+              : Promise.resolve()
+          )
+        );
 
         // DOM side: update shapes inside closest svg-ext root
         const allAttrs = (await selected.getAllAttributes?.()) || [];
@@ -354,6 +352,7 @@ const App: React.FC = () => {
           const origFill = shape.getAttribute("data-svg-ext-orig-fill");
           const origStroke = shape.getAttribute("data-svg-ext-orig-stroke");
 
+          // last applied color is persisted in attributes → survives app close
           if (origFill && origFill !== "none") {
             shape.setAttribute("fill", webflowColor);
           }
@@ -364,7 +363,7 @@ const App: React.FC = () => {
       } catch {
         // swallow errors to avoid console spam; will retry next interval
       }
-    }, 1200); // a bit slower to reduce DOM churn
+    }, 1200); // still light enough, avoids DOM thrash
 
     return () => {
       cancelled = true;
